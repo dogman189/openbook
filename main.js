@@ -6,11 +6,16 @@ const fs = require('fs');
 
 let mainWindow = null;
 let pythonProcess = null;
+// false = boot normally, 'deps' = pip modules missing (blocks boot and shows
+// the setup screen). OCR is EasyOCR, so a missing engine is just a missing
+// dependency and needs no separate gate.
 let setupMode = false;
 let installerRunning = false;
 const BACKEND_PORT = 5678;
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
-const REQUIRED_MODULES = ['flask', 'chromadb', 'pypdf', 'fitz', 'pytesseract', 'PIL'];
+// OCR runs on EasyOCR (pure Python), so its import is part of the same
+// preflight gate as the rest — a missing engine is just a missing dep.
+const REQUIRED_MODULES = ['flask', 'chromadb', 'pypdf', 'fitz', 'easyocr'];
 
 // Data root: OPENBOOK_HOME env override, exe dir when packaged, repo root in dev.
 function getDataRoot() {
@@ -145,38 +150,14 @@ function backendBinaryExists() {
 // run backend.py, and whether its imports already resolve.
 function getSetupState() {
   const exe = findScriptPython();
-  if (!exe) return { python: null, ok: false, missing: [], ocr: ocrStatus() };
+  if (!exe) return { python: null, ok: false, missing: [], setupReason: 'deps' };
   const check = preflight(exe);
-  return { python: exe, ok: check.ok, missing: check.missing, ocr: ocrStatus() };
-}
-
-// Tesseract native binary status for the setup screen: explicit override,
-// app-bundled copy (exe dir when packaged), then PATH. Mirrors the
-// backend's _tesseract_cmd() resolution without importing Python.
-function ocrStatus() {
-  const env = process.env.TESSERACT_CMD;
-  if (env && fs.existsSync(env)) return { available: true, cmd: env };
-  const bundled = bundledTesseract();
-  if (bundled) return { available: true, cmd: bundled };
-  if (ocrOnPath()) return { available: true, cmd: 'tesseract (PATH)' };
-  return { available: false, cmd: null };
-}
-
-function bundledTesseract() {
-  const root = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
-  for (const c of [path.join(root, 'tesseract', 'tesseract.exe'), path.join(root, 'tesseract', 'bin', 'tesseract.exe')]) {
-    if (fs.existsSync(c)) return c;
-  }
-  return null;
-}
-
-function ocrOnPath() {
-  try {
-    execSync('tesseract --version', { stdio: 'ignore' });
-    return true;
-  } catch (_) {
-    return false;
-  }
+  return {
+    python: exe,
+    ok: check.ok,
+    missing: check.missing,
+    setupReason: check.ok ? null : 'deps',
+  };
 }
 
 function startPythonBackend() {
@@ -213,8 +194,9 @@ function startPythonBackend() {
     const check = preflight(exe);
     if (!check.ok) {
       // No fatal quit: the window opens in setup mode with an
-      // Install-dependencies button (SETUP bridge) instead.
-      setupMode = true;
+      // Install-dependencies button (SETUP bridge) instead. A missing
+      // EasyOCR lands here too — it is just another pip dependency.
+      setupMode = 'deps';
       console.log(`[Electron] Dependencies missing for ${exe}: ${check.missing.join(', ')} — entering setup mode.`);
       return;
     }
@@ -442,11 +424,7 @@ function spawnStep(cmd, args, cwd, emit) {
 function runInstaller(event) {
   if (installerRunning) return Promise.resolve({ code: 2, error: 'install already running' });
   installerRunning = true;
-  const emit = (line) => {
-    try {
-      event.sender.send('openbook:install-progress', String(line));
-    } catch (_) {}
-  };
+  const emit = progressSender(event);
   const base = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
   const isWin = process.platform === 'win32';
   const venvPath = path.join(base, '.venv');
@@ -482,74 +460,19 @@ function runInstaller(event) {
       emit('ERROR: installation failed — see output above.');
       return { code, ocrAvailable: false };
     }
-    const ocrAvailable = await installTesseract(base, emit);
     emit('Done. Starting the study engine ...');
-    return { code: 0, ocrAvailable };
+    return { code: 0 };
   })().finally(() => {
     installerRunning = false;
   });
-}
-
-// Pinned UB Mannheim build, mirroring install-deps.bat. Bumped by editing
-// the version in both places.
-const TESSERACT_VER = '5.5.0.20241110';
-const TESSERACT_URL =
-  `https://github.com/UB-Mannheim/tesseract/releases/download/${TESSERACT_VER}/tesseract-ocr-w64-setup-${TESSERACT_VER}.exe`;
-
-// Tesseract native binary for scanned-PDF OCR. Skips when bundled or on
-// PATH; downloads + silent-installs into <app>/tesseract on Windows only
-// (other platforms get the brew/apt hint). Returns true when OCR is usable.
-function installTesseract(base, emit) {
-  return (async () => {
-    if (bundledTesseract()) {
-      emit('Tesseract already present — skipping download.');
-      return true;
-    }
-    if (ocrOnPath()) {
-      emit('Tesseract found on PATH — skipping download.');
-      return true;
-    }
-    if (process.platform !== 'win32') {
-      emit('NOTE: automatic Tesseract download is Windows-only.');
-      emit('  macOS: brew install tesseract | Ubuntu/Debian: sudo apt install tesseract-ocr');
-      return false;
-    }
-    const os = require('os');
-    const setupExe = path.join(os.tmpdir(), 'tesseract-setup-openbook.exe');
-    emit(`Downloading Tesseract ${TESSERACT_VER} installer (~50MB) ...`);
-    const dl = await spawnStep(
-      'powershell.exe',
-      ['-NoProfile', '-Command', `Invoke-WebRequest -Uri '${TESSERACT_URL}' -OutFile '${setupExe}'`],
-      base,
-      emit
-    );
-    if (dl !== 0 || !fs.existsSync(setupExe)) {
-      emit('WARNING: Tesseract download failed — scanned PDFs will be rejected. See docs/troubleshooting.md.');
-      return false;
-    }
-    emit('Installing Tesseract into tesseract\\ ...');
-    const inst = await spawnStep(
-      setupExe,
-      ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `/DIR=${path.join(base, 'tesseract')}`],
-      base,
-      emit
-    );
-    try {
-      fs.unlinkSync(setupExe);
-    } catch (_) {}
-    if (inst !== 0 || !bundledTesseract()) {
-      emit('WARNING: Tesseract installer failed — scanned PDFs will be rejected. See docs/troubleshooting.md.');
-      return false;
-    }
-    emit('Tesseract installed.');
-    return true;
-  })();
 }
 
 function registerSetupIpc() {
   ipcMain.handle('openbook:deps-status', () => getSetupState());
   ipcMain.handle('openbook:install-deps', (event) => runInstaller(event));
   ipcMain.handle('openbook:start-backend', async () => {
+    // Post-install pass-through: the deps gate still applies, so a failed
+    // pip run cannot slip through into a dead backend.
     setupMode = false;
     startPythonBackend();
     if (setupMode) return { ok: false, error: 'dependencies still missing' };
@@ -577,7 +500,7 @@ app.whenReady().then(async () => {
       console.error('[Electron] Backend failed to start:', e.message);
     }
   } else {
-    console.log('[Electron] Setup mode — window will offer dependency install.');
+    console.log(`[Electron] Setup mode (${setupMode}) — window will offer setup actions.`);
   }
 
   createWindow();
@@ -615,7 +538,6 @@ module.exports = {
   findSystemPython,
   backendBinaryExists,
   getSetupState,
-  ocrStatus,
   waitForBackend,
   getDataRoot,
   preflight,

@@ -213,6 +213,9 @@ MAX_PAGES = 1000
 # Pages with less embedded text than this get raster + OCR treatment.
 OCR_MIN_CHARS = 50
 OCR_DPI = 200
+# Minimum characters OCR must yield across the pages it processed before
+# the scan is called unreadable.
+MIN_OCR_CHARS = 20
 
 
 def _pdf_reader(path):
@@ -247,70 +250,101 @@ def parse_pdf(path: str):
     needy = [p["page"] for p in out if len(p["text"].strip()) < OCR_MIN_CHARS]
     if not needy:
         raise ValueError("Scanned PDF — extracted text too short")
-    if _tesseract_cmd() is None:
+    if _ocr_available() is False:
         raise ValueError(
-            "OCR unavailable: install Tesseract (see docs/troubleshooting.md) "
-            "to ingest scanned PDFs"
+            "OCR unavailable: install Python dependencies "
+            "(pip install -r requirements.txt) to ingest scanned PDFs"
         )
     try:
-        for pg, png in _raster_pages(path, needy):
-            out[pg - 1]["text"] = _ocr_page_png(png)
+        ocr_chars = 0
+        for pg, arr in _raster_pages(path, needy):
+            out[pg - 1]["text"] = _ocr_page(arr)
+            ocr_chars += len(out[pg - 1]["text"].strip())
             log(f"System: OCR page {pg} done")
     except ValueError:
         raise
     except Exception as e:
         raise ValueError(f"OCR failed: {e}")
-    total = sum(len(p["text"]) for p in out)
-    if total < 200:
-        raise ValueError("Scanned PDF — text still too short after OCR")
+    # Gate on what OCR produced, not on the document total. The 200-char
+    # floor above only decides whether to *attempt* OCR; applying it again
+    # here rejected perfectly readable short scans (a page with a few
+    # lines legitimately yields well under 200 chars). A real page clears
+    # this easily, while a blank or unreadable scan lands near zero.
+    if ocr_chars < MIN_OCR_CHARS:
+        raise ValueError("Scanned PDF — OCR found no readable text")
     return out
 
 
-def _tesseract_cmd():
-    # Tesseract native binary resolution: explicit override first, then the
-    # app-bundled copy (exe dir when packaged, repo root in dev — placed
-    # there by install-deps), then anything on PATH. None means OCR is off.
-    import shutil
+_ocr_reader = None
 
-    env = os.getenv("TESSERACT_CMD")
-    if env:
-        return env
-    root = app_root()
-    for cand in (root / "tesseract" / "tesseract.exe", root / "tesseract" / "bin" / "tesseract.exe"):
-        if cand.exists():
-            return str(cand)
-    return shutil.which("tesseract")
+
+def _ocr_available():
+    # EasyOCR is a pip dependency (no native binary), so availability is
+    # just "does it import". Lazy so the module loads without it.
+    try:
+        import easyocr  # noqa: F401
+
+        return True
+    except Exception:
+        return False
+
+
+def _ocr_engine():
+    # Singleton reader. Weights (~100MB) land in <app>/data/easyocr so a
+    # portable folder stays self-contained (same policy as HF_HOME) instead
+    # of writing into the user's home profile.
+    #
+    # verbose=False is required, not cosmetic: EasyOCR's download progress
+    # bar prints U+2588 block characters, which raise UnicodeEncodeError on
+    # a default Windows cp1252 console and abort the download mid-flight.
+    global _ocr_reader
+    if _ocr_reader is None:
+        import easyocr
+
+        try:
+            import torch
+
+            gpu = torch.cuda.is_available()
+        except Exception:
+            gpu = False
+        model_dir = DATA_DIR / "easyocr"
+        model_dir.mkdir(parents=True, exist_ok=True)
+        _ocr_reader = easyocr.Reader(
+            ["en"], gpu=gpu, verbose=False, model_storage_directory=str(model_dir)
+        )
+        log(f"System: OCR engine ready ({'gpu' if gpu else 'cpu'}, models in {model_dir})")
+    return _ocr_reader
 
 
 def _raster_pages(path, pages):
-    # PyMuPDF rasterizes without system deps (lazy import keeps it optional).
+    # PyMuPDF rasterizes without system deps; numpy arrays feed EasyOCR
+    # directly (lazy imports keep both optional).
     import fitz
+    import numpy as np
 
     doc = fitz.open(path)
     try:
         for pg in pages:
             pix = doc[pg - 1].get_pixmap(dpi=OCR_DPI)
-            yield pg, pix.tobytes("png")
+            n = pix.n - (1 if pix.alpha else 0)
+            arr = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
+                pix.height, pix.width, pix.n
+            )[:, :, :n]
+            if n == 1:
+                arr = np.repeat(arr, 3, axis=2)
+            yield pg, arr
     finally:
         doc.close()
 
 
-def _ocr_page_png(png_bytes):
-    import io
-
-    from PIL import Image
-
-    import pytesseract
-
-    cmd = _tesseract_cmd()
-    if cmd is None:
+def _ocr_page(arr):
+    if not _ocr_available():
         raise ValueError(
-            "OCR unavailable: install Tesseract (see docs/troubleshooting.md) "
-            "to ingest scanned PDFs"
+            "OCR unavailable: install Python dependencies "
+            "(pip install -r requirements.txt) to ingest scanned PDFs"
         )
-    pytesseract.pytesseract.tesseract_cmd = cmd
-    img = Image.open(io.BytesIO(png_bytes))
-    return pytesseract.image_to_string(img, lang="eng") or ""
+    hits = _ocr_engine().readtext(arr)
+    return " ".join(text for _, text, _ in hits) or ""
 
 
 def chunk_text(pages, size=800, overlap=100):
@@ -780,7 +814,7 @@ def api_add_source(nid):
         try:
             pages = parse_pdf(str(dest))
         except ValueError as e:
-            # >100MB / >1000 pages limits, missing-Tesseract ("OCR
+            # >100MB / >1000 pages limits, a missing OCR engine ("OCR
             # unavailable") and unreadable-scan rejections surface here as
             # 400 with the message.
             log(f"Error: ingest rejected {safe_name}: {e}")

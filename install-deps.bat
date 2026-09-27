@@ -47,36 +47,6 @@ if errorlevel 1 (
 )
 
 echo.
-echo Checking for Tesseract OCR (needed for scanned PDFs) ...
-if exist "tesseract\tesseract.exe" (
-  echo Tesseract already present in tesseract\ - skipping download.
-  goto :skip_tesseract
-)
-where tesseract >nul 2>nul
-if not errorlevel 1 (
-  echo Tesseract found on PATH - skipping download.
-  goto :skip_tesseract
-)
-set TESSERACT_VER=5.5.0.20241110
-set TESSERACT_URL=https://github.com/UB-Mannheim/tesseract/releases/download/%TESSERACT_VER%/tesseract-ocr-w64-setup-%TESSERACT_VER%.exe
-set TESSERACT_EXE=%TEMP%\tesseract-setup-openbook.exe
-echo Downloading Tesseract %TESSERACT_VER% installer (~50MB) ...
-powershell -NoProfile -Command "Invoke-WebRequest -Uri '%TESSERACT_URL%' -OutFile '%TESSERACT_EXE%'"
-if errorlevel 1 (
-  echo WARNING: Tesseract download failed. Scanned PDFs will be rejected until Tesseract is installed.
-  echo See docs\troubleshooting.md for manual setup.
-  goto :skip_tesseract
-)
-echo Installing Tesseract into tesseract\ ...
-"%TESSERACT_EXE%" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /DIR="%~dp0tesseract"
-if errorlevel 1 (
-  echo WARNING: Tesseract installer failed. Scanned PDFs will be rejected until Tesseract is installed.
-  echo See docs\troubleshooting.md for manual setup.
-)
-del "%TESSERACT_EXE%" >nul 2>nul
-:skip_tesseract
-
-echo.
 echo Done. Open OpenBook.exe - it will use .venv automatically.
 echo.
 pause

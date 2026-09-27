@@ -68,7 +68,11 @@ def test_sources_upload_basename(client, nid, monkeypatch):
     assert (backend.UPLOADS_DIR / nid / "evil.pdf").exists()
 
 
-def test_sources_upload_scanned_pdf_400(client, nid, monkeypatch):
+def test_sources_upload_blank_scan_400(client, nid, monkeypatch):
+    # A page with no embedded text and nothing OCR-able must be rejected
+    # with 400 and an OCR-specific reason. Both rejection paths (no engine
+    # installed, or engine found nothing) are asserted so the test holds
+    # whether or not easyocr is present in the environment.
     class FakePage:
         def extract_text(self):
             return ""
@@ -78,6 +82,28 @@ def test_sources_upload_scanned_pdf_400(client, nid, monkeypatch):
             self.pages = [FakePage()]
 
     monkeypatch.setattr(backend, "PdfReader", FakeReader)
+    monkeypatch.setattr(backend, "_ocr_available", lambda: True)
+    monkeypatch.setattr(backend, "_raster_pages", lambda path, pages: [(p, b"arr") for p in pages])
+    monkeypatch.setattr(backend, "_ocr_page", lambda arr: "")
+    data = {"file": (io.BytesIO(b"1" * 300), "scan.pdf")}
+    r = client.post(
+        f"/api/notebooks/{nid}/sources", data=data, content_type="multipart/form-data"
+    )
+    assert r.status_code == 400
+    assert "no readable text" in r.get_json()["error"]
+
+
+def test_sources_upload_scan_without_ocr_engine_400(client, nid, monkeypatch):
+    class FakePage:
+        def extract_text(self):
+            return ""
+
+    class FakeReader:
+        def __init__(self, path):
+            self.pages = [FakePage()]
+
+    monkeypatch.setattr(backend, "PdfReader", FakeReader)
+    monkeypatch.setattr(backend, "_ocr_available", lambda: False)
     data = {"file": (io.BytesIO(b"1" * 300), "scan.pdf")}
     r = client.post(
         f"/api/notebooks/{nid}/sources", data=data, content_type="multipart/form-data"

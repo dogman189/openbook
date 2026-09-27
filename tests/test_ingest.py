@@ -12,7 +12,7 @@ def test_parse_pdf_limits_reject(tmp_path):
         parse_pdf(str(p))
 
 
-def test_parse_pdf_scanned_without_tesseract_rejects(monkeypatch, tmp_path):
+def test_parse_pdf_scanned_without_ocr_engine_rejects(monkeypatch, tmp_path):
     f = tmp_path / "s.pdf"
     f.write_bytes(b"%PDF tiny")
 
@@ -25,7 +25,7 @@ def test_parse_pdf_scanned_without_tesseract_rejects(monkeypatch, tmp_path):
             self.pages = [_Page()]
 
     monkeypatch.setattr(backend, "PdfReader", _Reader)
-    monkeypatch.setattr(backend, "_tesseract_cmd", lambda: None)
+    monkeypatch.setattr(backend, "_ocr_available", lambda: False)
     with pytest.raises(ValueError, match="OCR unavailable"):
         parse_pdf(str(f))
 
@@ -49,21 +49,21 @@ def test_parse_pdf_ocrs_only_empty_pages(monkeypatch, tmp_path):
             self.pages = [_Page("selectable " * 6), _Page("")]
 
     monkeypatch.setattr(backend, "PdfReader", _Reader)
-    monkeypatch.setattr(backend, "_tesseract_cmd", lambda: "tesseract")
+    monkeypatch.setattr(backend, "_ocr_available", lambda: True)
     monkeypatch.setattr(
-        backend, "_raster_pages", lambda path, pages: [(pg, b"png") for pg in pages]
+        backend, "_raster_pages", lambda path, pages: [(pg, b"arr") for pg in pages]
     )
     seen = []
 
-    def _fake_ocr(png):
-        seen.append(png)
+    def _fake_ocr(arr):
+        seen.append(arr)
         return "ocred text " * 50
 
-    monkeypatch.setattr(backend, "_ocr_page_png", _fake_ocr)
+    monkeypatch.setattr(backend, "_ocr_page", _fake_ocr)
     out = parse_pdf(str(f))
     assert out[0]["text"].startswith("selectable")
     assert out[1]["text"].startswith("ocred text")
-    assert seen == [b"png"]
+    assert seen == [b"arr"]
 
 
 def test_parse_pdf_too_many_pages_rejects(monkeypatch, tmp_path):

@@ -38,17 +38,17 @@ pip install -r requirements.txt
 ## PDF rejected
 - **Too big:** `PDF over 100MB limit` → split by chapters.
 - **Too long:** `PDF over 1000 pages limit` → split by chapters.
-- **Scanned, no OCR engine:** `OCR unavailable: install Tesseract ...` → install Tesseract (below) and re-upload. Pages with embedded text are kept; only image-only pages are rastered at 200 DPI.
-- **Scanned, still unreadable:** `Scanned PDF — text still too short after OCR` (<200 chars even after OCR) → higher-resolution scan, or Paste text.
+- **Scanned, engine missing:** `OCR unavailable: install Python dependencies ...` → run `pip install -r requirements.txt` (or the in-app **Install dependencies** button) and re-upload. Pages with embedded text are kept; only image-only pages are rastered at 200 DPI.
+- **Scanned, still unreadable:** `Scanned PDF — OCR found no readable text` → higher-resolution scan, or Paste text.
 - **Corrupt:** `Corrupt PDF: ...` → re-export. The uploaded file stays in `data/uploads/<notebook>/`; nothing is quarantined away.
 - **Missing text field:** `text required` (422) → JSON body must include `text`.
 
-## Tesseract OCR setup (scanned PDFs)
-Image-only pages are OCRed per page (embedded text elsewhere is kept as-is). The engine resolves as: `TESSERACT_CMD` env → `<app>/tesseract/tesseract.exe` (exe dir when packaged) → `PATH`.
-- **Windows (portable):** run `install-deps.bat` — it downloads the pinned UB Mannheim Tesseract 5.5.0 installer and silent-installs into `tesseract/` next to the app. Re-run it to repair.
-- **Manual:** install any Tesseract 5 build with English traineddata and ensure `tesseract` is on `PATH`, or set `TESSERACT_CMD` to the exe.
-- **macOS / Linux:** `brew install tesseract` / `sudo apt install tesseract-ocr` (`install.sh` only warns; it never downloads).
-- The setup screen shows `OCR: ready/missing`. Large scans take minutes (one sync worker per upload; other requests keep working) — watch the Activity Log.
+## OCR setup (scanned PDFs)
+OCR is [EasyOCR](https://github.com/JaidedAI/EasyOCR), a pure-Python dependency — no native binary, no separate installer. Image-only pages are OCRed per page at 200 DPI; pages that already have a text layer are left untouched.
+- **Install:** `pip install -r requirements.txt` (or the in-app **Install dependencies** button). Without it, uploads of scans return the `OCR unavailable` 400; everything else still works.
+- **Models:** the detector/recogniser weights (~100MB) download once on first OCR into `data/easyocr/`, so a portable folder stays self-contained. Watch progress in the Activity Log.
+- **Speed:** GPU is used when torch reports CUDA, CPU otherwise (slower — seconds per page). Large scans take minutes; other requests keep working.
+- **Quality:** best on clean, straight, high-contrast scans. Handwriting, skew, and low-DPI phone photos are where accuracy drops.
 
 ## Chroma lock / no results
 **Symptom:** Chroma lock error on Ask/Summary, or `Not in your sources.` for everything.
