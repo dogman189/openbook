@@ -156,15 +156,27 @@ function getSetupState() {
 function ocrStatus() {
   const env = process.env.TESSERACT_CMD;
   if (env && fs.existsSync(env)) return { available: true, cmd: env };
+  const bundled = bundledTesseract();
+  if (bundled) return { available: true, cmd: bundled };
+  if (ocrOnPath()) return { available: true, cmd: 'tesseract (PATH)' };
+  return { available: false, cmd: null };
+}
+
+function bundledTesseract() {
   const root = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
   for (const c of [path.join(root, 'tesseract', 'tesseract.exe'), path.join(root, 'tesseract', 'bin', 'tesseract.exe')]) {
-    if (fs.existsSync(c)) return { available: true, cmd: c };
+    if (fs.existsSync(c)) return c;
   }
+  return null;
+}
+
+function ocrOnPath() {
   try {
     execSync('tesseract --version', { stdio: 'ignore' });
-    return { available: true, cmd: 'tesseract (PATH)' };
-  } catch (_) {}
-  return { available: false, cmd: null };
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function startPythonBackend() {
@@ -466,11 +478,72 @@ function runInstaller(event) {
     await spawnStep(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], base, emit);
     emit('Installing OpenBook libraries (torch is a ~4GB download) ...');
     const code = await spawnStep(py, ['-m', 'pip', 'install', '-r', requirements], base, emit);
-    emit(code === 0 ? 'Done. Starting the study engine ...' : 'ERROR: installation failed — see output above.');
-    return { code };
+    if (code !== 0) {
+      emit('ERROR: installation failed — see output above.');
+      return { code, ocrAvailable: false };
+    }
+    const ocrAvailable = await installTesseract(base, emit);
+    emit('Done. Starting the study engine ...');
+    return { code: 0, ocrAvailable };
   })().finally(() => {
     installerRunning = false;
   });
+}
+
+// Pinned UB Mannheim build, mirroring install-deps.bat. Bumped by editing
+// the version in both places.
+const TESSERACT_VER = '5.5.0.20241110';
+const TESSERACT_URL =
+  `https://github.com/UB-Mannheim/tesseract/releases/download/${TESSERACT_VER}/tesseract-ocr-w64-setup-${TESSERACT_VER}.exe`;
+
+// Tesseract native binary for scanned-PDF OCR. Skips when bundled or on
+// PATH; downloads + silent-installs into <app>/tesseract on Windows only
+// (other platforms get the brew/apt hint). Returns true when OCR is usable.
+function installTesseract(base, emit) {
+  return (async () => {
+    if (bundledTesseract()) {
+      emit('Tesseract already present — skipping download.');
+      return true;
+    }
+    if (ocrOnPath()) {
+      emit('Tesseract found on PATH — skipping download.');
+      return true;
+    }
+    if (process.platform !== 'win32') {
+      emit('NOTE: automatic Tesseract download is Windows-only.');
+      emit('  macOS: brew install tesseract | Ubuntu/Debian: sudo apt install tesseract-ocr');
+      return false;
+    }
+    const os = require('os');
+    const setupExe = path.join(os.tmpdir(), 'tesseract-setup-openbook.exe');
+    emit(`Downloading Tesseract ${TESSERACT_VER} installer (~50MB) ...`);
+    const dl = await spawnStep(
+      'powershell.exe',
+      ['-NoProfile', '-Command', `Invoke-WebRequest -Uri '${TESSERACT_URL}' -OutFile '${setupExe}'`],
+      base,
+      emit
+    );
+    if (dl !== 0 || !fs.existsSync(setupExe)) {
+      emit('WARNING: Tesseract download failed — scanned PDFs will be rejected. See docs/troubleshooting.md.');
+      return false;
+    }
+    emit('Installing Tesseract into tesseract\\ ...');
+    const inst = await spawnStep(
+      setupExe,
+      ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', `/DIR=${path.join(base, 'tesseract')}`],
+      base,
+      emit
+    );
+    try {
+      fs.unlinkSync(setupExe);
+    } catch (_) {}
+    if (inst !== 0 || !bundledTesseract()) {
+      emit('WARNING: Tesseract installer failed — scanned PDFs will be rejected. See docs/troubleshooting.md.');
+      return false;
+    }
+    emit('Tesseract installed.');
+    return true;
+  })();
 }
 
 function registerSetupIpc() {

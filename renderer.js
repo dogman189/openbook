@@ -1466,6 +1466,11 @@ window.OB = window.OB || {};
         btn.textContent = "Installing…";
         window.SETUP.installDeps()
           .then(function (res) {
+            var ocrEl = document.getElementById("setup-ocr");
+            if (ocrEl) {
+              if (res && res.ocrAvailable) ocrEl.textContent = "OCR: ready";
+              else ocrEl.textContent = "OCR: missing — scanned PDFs will be rejected (see troubleshooting).";
+            }
             if (res && res.code === 0) {
               btn.textContent = "Starting engine…";
               return window.SETUP.startBackend().then(function (r) {

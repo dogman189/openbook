@@ -8,6 +8,7 @@ for (const ch of ["openbook:deps-status", "openbook:install-deps", "openbook:sta
   if (!main.includes(ch)) throw new Error(`setup channel ${ch} missing in main.js`);
 }
 if (!main.includes("setupMode")) throw new Error("main missing setupMode gate");
+if (!main.includes("tesseract-ocr-w64-setup")) throw new Error("in-app installer missing tesseract download");
 if (!main.includes("/api/config")) throw new Error("readiness probe missing");
 if (!main.includes("process.resourcesPath")) throw new Error("packaged exe lookup missing");
 
