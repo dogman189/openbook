@@ -83,7 +83,7 @@ def test_sources_upload_scanned_pdf_400(client, nid, monkeypatch):
         f"/api/notebooks/{nid}/sources", data=data, content_type="multipart/form-data"
     )
     assert r.status_code == 400
-    assert "Scanned" in r.get_json()["error"]
+    assert "OCR unavailable" in r.get_json()["error"]
 
 
 def test_messages_list(client, nid):

@@ -10,7 +10,7 @@ let setupMode = false;
 let installerRunning = false;
 const BACKEND_PORT = 5678;
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
-const REQUIRED_MODULES = ['flask', 'chromadb', 'pypdf'];
+const REQUIRED_MODULES = ['flask', 'chromadb', 'pypdf', 'fitz', 'pytesseract', 'PIL'];
 
 // Data root: OPENBOOK_HOME env override, exe dir when packaged, repo root in dev.
 function getDataRoot() {
@@ -145,9 +145,26 @@ function backendBinaryExists() {
 // run backend.py, and whether its imports already resolve.
 function getSetupState() {
   const exe = findScriptPython();
-  if (!exe) return { python: null, ok: false, missing: [] };
+  if (!exe) return { python: null, ok: false, missing: [], ocr: ocrStatus() };
   const check = preflight(exe);
-  return { python: exe, ok: check.ok, missing: check.missing };
+  return { python: exe, ok: check.ok, missing: check.missing, ocr: ocrStatus() };
+}
+
+// Tesseract native binary status for the setup screen: explicit override,
+// app-bundled copy (exe dir when packaged), then PATH. Mirrors the
+// backend's _tesseract_cmd() resolution without importing Python.
+function ocrStatus() {
+  const env = process.env.TESSERACT_CMD;
+  if (env && fs.existsSync(env)) return { available: true, cmd: env };
+  const root = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  for (const c of [path.join(root, 'tesseract', 'tesseract.exe'), path.join(root, 'tesseract', 'bin', 'tesseract.exe')]) {
+    if (fs.existsSync(c)) return { available: true, cmd: c };
+  }
+  try {
+    execSync('tesseract --version', { stdio: 'ignore' });
+    return { available: true, cmd: 'tesseract (PATH)' };
+  } catch (_) {}
+  return { available: false, cmd: null };
 }
 
 function startPythonBackend() {
@@ -525,6 +542,7 @@ module.exports = {
   findSystemPython,
   backendBinaryExists,
   getSetupState,
+  ocrStatus,
   waitForBackend,
   getDataRoot,
   preflight,

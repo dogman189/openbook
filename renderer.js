@@ -1448,6 +1448,11 @@ window.OB = window.OB || {};
       return;
     }
     if (missing) missing.textContent = "Missing: " + (st.missing || []).join(", ");
+    var ocr = document.getElementById("setup-ocr");
+    if (ocr) {
+      if (st.ocr && st.ocr.available) ocr.textContent = "OCR: ready (" + st.ocr.cmd + ")";
+      else ocr.textContent = "OCR: missing — scanned PDFs will be rejected (see troubleshooting).";
+    }
     if (window.SETUP && window.SETUP.onProgress) {
       window.SETUP.onProgress(function (line) {
         if (!logpre) return;

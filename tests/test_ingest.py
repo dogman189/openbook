@@ -1,6 +1,7 @@
 # tests/test_ingest.py — PDF limits + chunking (Task 2, Flask core).
 import pytest
 
+import backend
 from backend import chunk_text, parse_pdf
 
 
@@ -11,7 +12,7 @@ def test_parse_pdf_limits_reject(tmp_path):
         parse_pdf(str(p))
 
 
-def test_parse_pdf_scanned_rejects(monkeypatch, tmp_path):
+def test_parse_pdf_scanned_without_tesseract_rejects(monkeypatch, tmp_path):
     f = tmp_path / "s.pdf"
     f.write_bytes(b"%PDF tiny")
 
@@ -23,9 +24,46 @@ def test_parse_pdf_scanned_rejects(monkeypatch, tmp_path):
         def __init__(self, path):
             self.pages = [_Page()]
 
-    monkeypatch.setattr("backend.PdfReader", _Reader)
-    with pytest.raises(ValueError, match="OCR not in v1"):
+    monkeypatch.setattr(backend, "PdfReader", _Reader)
+    monkeypatch.setattr(backend, "_tesseract_cmd", lambda: None)
+    with pytest.raises(ValueError, match="OCR unavailable"):
         parse_pdf(str(f))
+
+
+def test_parse_pdf_ocrs_only_empty_pages(monkeypatch, tmp_path):
+    f = tmp_path / "mix.pdf"
+    f.write_bytes(b"%PDF tiny")
+
+    class _Page:
+        def __init__(self, text):
+            self._text = text
+
+        def extract_text(self):
+            return self._text
+
+    class _Reader:
+        def __init__(self, path):
+            # Page 1 holds little but enough embedded text to keep (>50
+            # chars, so no OCR); page 2 is image-only. Total stays under
+            # the 200-char floor so the OCR path must run to pass.
+            self.pages = [_Page("selectable " * 6), _Page("")]
+
+    monkeypatch.setattr(backend, "PdfReader", _Reader)
+    monkeypatch.setattr(backend, "_tesseract_cmd", lambda: "tesseract")
+    monkeypatch.setattr(
+        backend, "_raster_pages", lambda path, pages: [(pg, b"png") for pg in pages]
+    )
+    seen = []
+
+    def _fake_ocr(png):
+        seen.append(png)
+        return "ocred text " * 50
+
+    monkeypatch.setattr(backend, "_ocr_page_png", _fake_ocr)
+    out = parse_pdf(str(f))
+    assert out[0]["text"].startswith("selectable")
+    assert out[1]["text"].startswith("ocred text")
+    assert seen == [b"png"]
 
 
 def test_parse_pdf_too_many_pages_rejects(monkeypatch, tmp_path):

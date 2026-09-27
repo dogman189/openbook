@@ -210,6 +210,9 @@ def delete_notebook(conn, notebook_id):
 # --------------------------------------------------------------- INGEST ----
 MAX_BYTES = 100 * 1024 * 1024
 MAX_PAGES = 1000
+# Pages with less embedded text than this get raster + OCR treatment.
+OCR_MIN_CHARS = 50
+OCR_DPI = 200
 
 
 def _pdf_reader(path):
@@ -238,9 +241,76 @@ def parse_pdf(path: str):
     except Exception as e:
         raise ValueError(f"Corrupt PDF: {e}")
     total = sum(len(p["text"]) for p in out)
+    if total >= 200:
+        return out
+    # Image-only pages: keep embedded text where it exists, OCR the rest.
+    needy = [p["page"] for p in out if len(p["text"].strip()) < OCR_MIN_CHARS]
+    if not needy:
+        raise ValueError("Scanned PDF — extracted text too short")
+    if _tesseract_cmd() is None:
+        raise ValueError(
+            "OCR unavailable: install Tesseract (see docs/troubleshooting.md) "
+            "to ingest scanned PDFs"
+        )
+    try:
+        for pg, png in _raster_pages(path, needy):
+            out[pg - 1]["text"] = _ocr_page_png(png)
+            log(f"System: OCR page {pg} done")
+    except ValueError:
+        raise
+    except Exception as e:
+        raise ValueError(f"OCR failed: {e}")
+    total = sum(len(p["text"]) for p in out)
     if total < 200:
-        raise ValueError("Scanned PDF — OCR not in v1: extracted text too short")
+        raise ValueError("Scanned PDF — text still too short after OCR")
     return out
+
+
+def _tesseract_cmd():
+    # Tesseract native binary resolution: explicit override first, then the
+    # app-bundled copy (exe dir when packaged, repo root in dev — placed
+    # there by install-deps), then anything on PATH. None means OCR is off.
+    import shutil
+
+    env = os.getenv("TESSERACT_CMD")
+    if env:
+        return env
+    root = app_root()
+    for cand in (root / "tesseract" / "tesseract.exe", root / "tesseract" / "bin" / "tesseract.exe"):
+        if cand.exists():
+            return str(cand)
+    return shutil.which("tesseract")
+
+
+def _raster_pages(path, pages):
+    # PyMuPDF rasterizes without system deps (lazy import keeps it optional).
+    import fitz
+
+    doc = fitz.open(path)
+    try:
+        for pg in pages:
+            pix = doc[pg - 1].get_pixmap(dpi=OCR_DPI)
+            yield pg, pix.tobytes("png")
+    finally:
+        doc.close()
+
+
+def _ocr_page_png(png_bytes):
+    import io
+
+    from PIL import Image
+
+    import pytesseract
+
+    cmd = _tesseract_cmd()
+    if cmd is None:
+        raise ValueError(
+            "OCR unavailable: install Tesseract (see docs/troubleshooting.md) "
+            "to ingest scanned PDFs"
+        )
+    pytesseract.pytesseract.tesseract_cmd = cmd
+    img = Image.open(io.BytesIO(png_bytes))
+    return pytesseract.image_to_string(img, lang="eng") or ""
 
 
 def chunk_text(pages, size=800, overlap=100):
@@ -710,8 +780,9 @@ def api_add_source(nid):
         try:
             pages = parse_pdf(str(dest))
         except ValueError as e:
-            # >100MB / >1000 pages limits and the scanned-PDF
-            # ("OCR not in v1") warning surface here as 400 with the message.
+            # >100MB / >1000 pages limits, missing-Tesseract ("OCR
+            # unavailable") and unreadable-scan rejections surface here as
+            # 400 with the message.
             log(f"Error: ingest rejected {safe_name}: {e}")
             return jsonify({"error": str(e)}), 400
         chunks = chunk_text(pages)

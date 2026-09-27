@@ -112,7 +112,8 @@ curl -X POST http://127.0.0.1:5678/api/notebooks/a1b2c3d4/sources -H "Content-Ty
 - 400 - Over 100MB: `{ "error": "PDF over 100MB limit" }`
 - 400 - Over 1000 pages: `{ "error": "PDF over 1000 pages limit" }`
 - 400 - Corrupt PDF: `{ "error": "Corrupt PDF: ..." }`
-- 400 - Scanned PDF (<200 chars extracted): `{ "error": "Scanned PDF — OCR not in v1: extracted text too short" }`
+- 400 - Scanned PDF, no OCR engine: `{ "error": "OCR unavailable: install Tesseract ..." }`
+- 400 - Scanned PDF, OCR yielded too little: `{ "error": "Scanned PDF — text still too short after OCR" }`
 - 422 - JSON without `text`: `{ "error": "text required" }`
 
 ### `GET /api/notebooks/<id>/sources`
