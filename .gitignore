@@ -1,0 +1,13 @@
+.opencode/node_modules/
+.opencode/package-lock.json
+.tmp/
+.superpowers/sdd/
+data/
+models/
+*.db
+release/
+dist/
+venv/
+.venv/
+__pycache__/
+.pytest_cache/
