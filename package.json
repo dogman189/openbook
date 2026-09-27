@@ -1,0 +1,38 @@
+{
+  "name": "openbook",
+  "version": "0.1.0",
+  "description": "OpenBook study app — Electron + Flask, 100% local",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "check": "node scripts/check.mjs",
+    "pack": "electron-builder --win --x64 --dir",
+    "build": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "dev.openbook.app",
+    "productName": "OpenBook",
+    "asar": false,
+    "files": [
+      "main.js",
+      "preload.js",
+      "index.html",
+      "renderer.js",
+      "app.css",
+      "macos.css",
+      "package.json"
+    ],
+    "win": {
+      "target": {
+        "target": "dir",
+        "arch": [
+          "x64"
+        ]
+      }
+    }
+  }
+}
