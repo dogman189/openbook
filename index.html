@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta
+  http-equiv="Content-Security-Policy"
+  content="default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src http://127.0.0.1:5678"
+/>
+<title>OpenBook</title>
+<link rel="stylesheet" href="app.css"/>
+<link rel="stylesheet" href="macos.css"/>
+</head>
+<body>
+
+<div id="orbs" aria-hidden="true">
+  <div class="orb orb-a"></div>
+  <div class="orb orb-b"></div>
+  <div class="orb orb-c"></div>
+</div>
+
+<div id="boot" role="status" aria-label="Loading">
+  <div class="boot-name">OpenBook</div>
+  <div class="boot-ring"></div>
+  <div class="boot-sub">starting study engine</div>
+</div>
+
+<div id="app">
+
+  <header id="topbar">
+    <span class="wordmark">OpenBook</span>
+    <span class="algo-chip">study · v1.0</span>
+    <div id="topbar-right">
+      <div class="model-picker" id="model-picker"></div>
+      <div id="status-pill">
+        <span class="s-dot"></span>
+        <span id="status-text">Loading</span>
+      </div>
+      <button id="theme-toggle" title="Toggle light / dark mode" aria-label="Toggle color theme">
+        <svg class="icon-moon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"/>
+        </svg>
+        <svg class="icon-sun" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="5"/>
+          <line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/>
+          <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+          <line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/>
+          <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="banner-slot"></div>
+
+  <div id="notebooks-panel" class="panel">
+    <div class="sidebar" id="notebooks"></div>
+    <div id="sources-slot"></div>
+  </div>
+
+  <main id="center-panel" class="panel">
+    <div id="center-slot"></div>
+  </main>
+
+  <aside id="studio-panel" class="panel">
+    <h2 class="studio-title">Studio</h2>
+    <div id="studio-slot"></div>
+  </aside>
+
+  <div id="log-panel" class="panel">
+    <div class="log-bar">
+      <span class="log-bar-lbl">Activity Log</span>
+      <span class="log-count-badge" id="log-count">0 events</span>
+      <div class="term-dots"><i></i><i></i><i></i></div>
+    </div>
+    <div id="log-output" aria-live="polite"></div>
+  </div>
+
+</div>
+
+<script src="renderer.js"></script>
+</body>
+</html>
