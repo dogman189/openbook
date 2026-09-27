@@ -407,6 +407,14 @@ function createApplicationMenu() {
 // Mirrors install-deps.bat so the portable dist can self-repair: creates
 // .venv next to the app (exe dir when packaged) and pip-installs
 // requirements.txt, streaming pip output to the setup screen.
+function progressSender(event) {
+  return (line) => {
+    try {
+      event.sender.send('openbook:install-progress', String(line));
+    } catch (_) {}
+  };
+}
+
 function spawnStep(cmd, args, cwd, emit) {
   return new Promise((resolve) => {
     emit(`$ ${cmd} ${args.join(' ')}`);

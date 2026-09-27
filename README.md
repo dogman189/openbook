@@ -50,6 +50,7 @@ WHY dir-pack + `.venv` fallback (not onefile): bundling `torch + transformers + 
 ```bash
 python -m pytest tests/ -v   # 56 tests: store/ingest/rag/chat/summary + Flask /api/* client
 node scripts/check.mjs       # parses backend URL wiring + every index.html slot + renderer contract
+node scripts/check-main.mjs  # loads main.js under a stubbed Electron and drives the real setup IPC handlers
 ```
 
 ## Usage
