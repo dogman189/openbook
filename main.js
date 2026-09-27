@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, Menu, shell } = require('electron');
+const { app, BrowserWindow, dialog, Menu, shell, ipcMain } = require('electron');
 const path = require('path');
 const { spawn, execSync, spawnSync } = require('child_process');
 const http = require('http');
@@ -6,6 +6,8 @@ const fs = require('fs');
 
 let mainWindow = null;
 let pythonProcess = null;
+let setupMode = false;
+let installerRunning = false;
 const BACKEND_PORT = 5678;
 const BACKEND_URL = `http://127.0.0.1:${BACKEND_PORT}`;
 const REQUIRED_MODULES = ['flask', 'chromadb', 'pypdf'];
@@ -87,48 +89,114 @@ function preflight(pythonExe) {
   return { ok: false, missing: missing.length > 0 ? missing : ['(unknown)'] };
 }
 
-function startPythonBackend() {
-  const found = findBackendExecutable();
+// --- SETUP-MODE PYTHON (dev + portable Phase-1: run backend.py directly) ---
+// findBackendExecutable() prefers a bundled backend.exe that only exists
+// after a Phase-2 pyinstaller build. These helpers resolve a script-capable
+// Python instead, so missing deps can be installed from inside the app.
+function findSystemPython() {
+  const isWin = process.platform === 'win32';
+  const candidates = isWin
+    ? ['python', 'python3', 'py']
+    : ['python3', 'python'];
 
-  if (!found) {
-    dialog.showErrorBox(
-      'Python Not Found',
-      'Could not find Python on this system.\n\nPlease install Python from python.org and check "Add Python to PATH" during installation.'
-    );
-    app.quit();
-    return;
+  for (const cmd of candidates) {
+    try {
+      execSync(`${cmd} --version`, { stdio: 'ignore' });
+      return cmd;
+    } catch (_) {}
   }
 
-  if (!app.isPackaged) {
-    const check = preflight(found.exe);
-    if (!check.ok) {
+  if (isWin) {
+    const bases = [
+      `${process.env.LOCALAPPDATA}\\Programs\\Python`,
+      'C:\\',
+    ];
+    const versions = ['Python313', 'Python312', 'Python311', 'Python310'];
+    for (const base of bases) {
+      for (const ver of versions) {
+        const p = path.join(base, ver, 'python.exe');
+        if (fs.existsSync(p)) return p;
+      }
+    }
+  }
+
+  return null;
+}
+
+function findScriptPython() {
+  const isWin = process.platform === 'win32';
+  const venvBase = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  for (const venvDir of ['.venv', 'venv']) {
+    const p = isWin
+      ? path.join(venvBase, venvDir, 'Scripts', 'python.exe')
+      : path.join(venvBase, venvDir, 'bin', 'python');
+    if (fs.existsSync(p)) return p;
+  }
+  return findSystemPython();
+}
+
+function backendBinaryExists() {
+  if (!app.isPackaged) return false;
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  return fs.existsSync(path.join(process.resourcesPath, `backend${ext}`));
+}
+
+// State for the setup screen (preload SETUP bridge): which Python would
+// run backend.py, and whether its imports already resolve.
+function getSetupState() {
+  const exe = findScriptPython();
+  if (!exe) return { python: null, ok: false, missing: [] };
+  const check = preflight(exe);
+  return { python: exe, ok: check.ok, missing: check.missing };
+}
+
+function startPythonBackend() {
+  let exe;
+  let args;
+  let cwd;
+
+  if (backendBinaryExists()) {
+    // Phase-2 onefile build: the bundled binary needs no preflight (-c
+    // would fail against it, so it is deliberately skipped here).
+    const ext = process.platform === 'win32' ? '.exe' : '';
+    exe = path.join(process.resourcesPath, `backend${ext}`);
+    args = [];
+    cwd = app.getPath('userData');
+    if (process.platform !== 'win32') {
+      try {
+        fs.chmodSync(exe, '755');
+        console.log(`[Electron] Set executable permissions on ${exe}`);
+      } catch (err) {
+        console.error(`[Electron] Failed to set executable permissions on ${exe}:`, err);
+      }
+    }
+  } else {
+    // Dev + portable Phase-1: run backend.py with a script-capable Python.
+    exe = findScriptPython();
+    if (!exe) {
       dialog.showErrorBox(
-        'OpenBook — dependencies missing',
-        `Using Python at:\n  ${found.exe}\n\nThese modules are not installed:\n  ${check.missing.join('\n  ')}\n\n` +
-        'Fix it by running this in the OpenBook folder:\n' +
-        '  install-deps.bat\n\n' +
-        'Or manually:\n' +
-        '  pip install -r requirements.txt'
+        'Python Not Found',
+        'Could not find Python on this system.\n\nPlease install Python from python.org and check "Add Python to PATH" during installation.'
       );
       app.quit();
       return;
     }
-  }
-
-  const { exe, args } = found;
-
-  if (app.isPackaged && process.platform !== 'win32') {
-    try {
-      fs.chmodSync(exe, '755');
-      console.log(`[Electron] Set executable permissions on ${exe}`);
-    } catch (err) {
-      console.error(`[Electron] Failed to set executable permissions on ${exe}:`, err);
+    const check = preflight(exe);
+    if (!check.ok) {
+      // No fatal quit: the window opens in setup mode with an
+      // Install-dependencies button (SETUP bridge) instead.
+      setupMode = true;
+      console.log(`[Electron] Dependencies missing for ${exe}: ${check.missing.join(', ')} — entering setup mode.`);
+      return;
     }
+    args = [path.join(__dirname, 'backend.py')];
+    cwd = app.isPackaged ? app.getPath('userData') : __dirname;
   }
 
   pythonProcess = spawn(exe, args, {
-    cwd: app.isPackaged ? app.getPath('userData') : __dirname,
+    cwd,
     env: { ...process.env, OPENBOOK_HOME: getDataRoot(), PYTHONUNBUFFERED: '1' },
+    windowsHide: true,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
@@ -324,16 +392,102 @@ function createApplicationMenu() {
   Menu.setApplicationMenu(menu);
 }
 
+// --- IN-APP DEPENDENCY INSTALLER (setup mode) ---
+// Mirrors install-deps.bat so the portable dist can self-repair: creates
+// .venv next to the app (exe dir when packaged) and pip-installs
+// requirements.txt, streaming pip output to the setup screen.
+function spawnStep(cmd, args, cwd, emit) {
+  return new Promise((resolve) => {
+    emit(`$ ${cmd} ${args.join(' ')}`);
+    const child = spawn(cmd, args, { cwd, windowsHide: true });
+    child.stdout.on('data', (d) => emit(d.toString().trimEnd()));
+    child.stderr.on('data', (d) => emit(d.toString().trimEnd()));
+    child.on('error', (e) => {
+      emit(`ERROR: failed to launch ${cmd}: ${e.message}`);
+      resolve(1);
+    });
+    child.on('exit', (code) => resolve(code == null ? 1 : code));
+  });
+}
+
+function runInstaller(event) {
+  if (installerRunning) return Promise.resolve({ code: 2, error: 'install already running' });
+  installerRunning = true;
+  const emit = (line) => {
+    try {
+      event.sender.send('openbook:install-progress', String(line));
+    } catch (_) {}
+  };
+  const base = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const isWin = process.platform === 'win32';
+  const venvPath = path.join(base, '.venv');
+  const venvPy = isWin
+    ? path.join(venvPath, 'Scripts', 'python.exe')
+    : path.join(venvPath, 'bin', 'python');
+  const requirements = path.join(__dirname, 'requirements.txt');
+
+  return (async () => {
+    if (!fs.existsSync(requirements)) {
+      emit('ERROR: requirements.txt not found next to the app.');
+      return { code: 1 };
+    }
+    let py = fs.existsSync(venvPy) ? venvPy : findSystemPython();
+    if (!py) {
+      emit('ERROR: no system Python found — install Python 3.11+ first.');
+      return { code: 1 };
+    }
+    if (!fs.existsSync(venvPy)) {
+      emit('Creating virtual environment in .venv ...');
+      const code = await spawnStep(py, ['-m', 'venv', '.venv'], base, emit);
+      if (code !== 0 || !fs.existsSync(venvPy)) {
+        emit('ERROR: could not create the virtual environment.');
+        return { code: 1 };
+      }
+      py = venvPy;
+    }
+    emit('Upgrading pip ...');
+    await spawnStep(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], base, emit);
+    emit('Installing OpenBook libraries (torch is a ~4GB download) ...');
+    const code = await spawnStep(py, ['-m', 'pip', 'install', '-r', requirements], base, emit);
+    emit(code === 0 ? 'Done. Starting the study engine ...' : 'ERROR: installation failed — see output above.');
+    return { code };
+  })().finally(() => {
+    installerRunning = false;
+  });
+}
+
+function registerSetupIpc() {
+  ipcMain.handle('openbook:deps-status', () => getSetupState());
+  ipcMain.handle('openbook:install-deps', (event) => runInstaller(event));
+  ipcMain.handle('openbook:start-backend', async () => {
+    setupMode = false;
+    startPythonBackend();
+    if (setupMode) return { ok: false, error: 'dependencies still missing' };
+    if (!pythonProcess) return { ok: false, error: 'backend process failed to spawn' };
+    try {
+      await waitForBackend();
+      return { ok: true };
+    } catch (e) {
+      return { ok: false, error: e.message };
+    }
+  });
+}
+
 // --- APP LIFECYCLE ---
 app.whenReady().then(async () => {
   createApplicationMenu();
+  registerSetupIpc();
   startPythonBackend();
 
-  try {
-    await waitForBackend();
-    console.log('[Electron] Backend ready.');
-  } catch (e) {
-    console.error('[Electron] Backend failed to start:', e.message);
+  if (!setupMode) {
+    try {
+      await waitForBackend();
+      console.log('[Electron] Backend ready.');
+    } catch (e) {
+      console.error('[Electron] Backend failed to start:', e.message);
+    }
+  } else {
+    console.log('[Electron] Setup mode — window will offer dependency install.');
   }
 
   createWindow();
@@ -367,6 +521,10 @@ app.on('will-quit', () => {
 
 module.exports = {
   findBackendExecutable,
+  findScriptPython,
+  findSystemPython,
+  backendBinaryExists,
+  getSetupState,
   waitForBackend,
   getDataRoot,
   preflight,

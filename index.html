@@ -25,6 +25,18 @@
   <div class="boot-sub">starting study engine</div>
 </div>
 
+<div id="setup" class="hidden" role="dialog" aria-label="Setup">
+  <div class="setup-card panel">
+    <div class="boot-name setup-name">OpenBook</div>
+    <div class="panel-title">Study engine setup</div>
+    <p class="panel-desc" id="setup-desc">Python libraries are missing. Install them once — downloads torch (~4GB) — then the app starts itself.</p>
+    <div id="setup-missing" class="hint hint-mb"></div>
+    <button id="setup-install" class="btn btn-primary">Install dependencies</button>
+    <pre id="setup-log" class="live-pre setup-log" aria-live="polite"></pre>
+    <p class="hint hint-mt">No network? Run install-deps.bat from the app folder instead.</p>
+  </div>
+</div>
+
 <div id="app">
 
   <header id="topbar">

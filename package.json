@@ -24,6 +24,8 @@
       "renderer.js",
       "app.css",
       "macos.css",
+      "backend.py",
+      "requirements.txt",
       "package.json"
     ],
     "win": {

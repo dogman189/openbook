@@ -1403,6 +1403,21 @@ window.OB = window.OB || {};
     renderNotebooks();
     renderModelPicker();
     renderChat(null);
+    if (window.SETUP && window.SETUP.getStatus) {
+      window.SETUP.getStatus()
+        .then(function (st) {
+          if (st && st.ok) normalReady();
+          else renderSetup(st || {});
+        })
+        .catch(function () {
+          normalReady();
+        });
+    } else {
+      normalReady();
+    }
+  }
+
+  function normalReady() {
     waitForBackend()
       .then(loadConfig)
       .then(function () {
@@ -1410,6 +1425,68 @@ window.OB = window.OB || {};
         var b = document.getElementById("boot");
         if (b) b.classList.add("hidden");
       });
+  }
+
+  // ---- Setup mode (missing Python deps) --------------------------------------
+  // The backend cannot serve this screen — it may not even import — so the
+  // Electron main process installs deps over the SETUP IPC bridge instead.
+  function renderSetup(st) {
+    var bootEl = document.getElementById("boot");
+    if (bootEl) bootEl.classList.add("hidden");
+    var box = document.getElementById("setup");
+    if (!box) return;
+    box.classList.remove("hidden");
+    var desc = document.getElementById("setup-desc");
+    var missing = document.getElementById("setup-missing");
+    var btn = document.getElementById("setup-install");
+    var logpre = document.getElementById("setup-log");
+    if (!st || !st.python) {
+      if (desc)
+        desc.textContent =
+          "Python 3.11+ was not found. Install it from python.org (tick 'Add Python to PATH'), restart OpenBook, then install dependencies here.";
+      if (btn) btn.style.display = "none";
+      return;
+    }
+    if (missing) missing.textContent = "Missing: " + (st.missing || []).join(", ");
+    if (window.SETUP && window.SETUP.onProgress) {
+      window.SETUP.onProgress(function (line) {
+        if (!logpre) return;
+        logpre.textContent += line + "\n";
+        logpre.scrollTop = logpre.scrollHeight;
+      });
+    }
+    if (btn) {
+      btn.addEventListener("click", function () {
+        btn.setAttribute("disabled", "");
+        btn.textContent = "Installing…";
+        window.SETUP.installDeps()
+          .then(function (res) {
+            if (res && res.code === 0) {
+              btn.textContent = "Starting engine…";
+              return window.SETUP.startBackend().then(function (r) {
+                if (r && r.ok) {
+                  box.classList.add("hidden");
+                  normalReady();
+                } else {
+                  btn.removeAttribute("disabled");
+                  btn.textContent = "Retry install";
+                  if (logpre)
+                    logpre.textContent +=
+                      "Backend failed to start: " + ((r && r.error) || "unknown") + "\n";
+                }
+              });
+            }
+            btn.removeAttribute("disabled");
+            btn.textContent = "Retry install";
+          })
+          .catch(function (e) {
+            btn.removeAttribute("disabled");
+            btn.textContent = "Retry install";
+            if (logpre)
+              logpre.textContent += "Install failed: " + (e && e.message) + "\n";
+          });
+      });
+    }
   }
 
   if (document.readyState === "loading") {
