@@ -804,7 +804,7 @@ window.OB = window.OB || {};
                 if (!t) return;
                 if (!t.startsWith("data:")) {
                   if (t) {
-                    acc += raw;
+                    acc += t;
                     live = acc;
                   }
                   return;

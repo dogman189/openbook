@@ -99,18 +99,20 @@ function startPythonBackend() {
     return;
   }
 
-  const check = preflight(found.exe);
-  if (!check.ok) {
-    dialog.showErrorBox(
-      'OpenBook — dependencies missing',
-      `Using Python at:\n  ${found.exe}\n\nThese modules are not installed:\n  ${check.missing.join('\n  ')}\n\n` +
-      'Fix it by running this in the OpenBook folder:\n' +
-      '  install-deps.bat\n\n' +
-      'Or manually:\n' +
-      '  pip install -r requirements.txt'
-    );
-    app.quit();
-    return;
+  if (!app.isPackaged) {
+    const check = preflight(found.exe);
+    if (!check.ok) {
+      dialog.showErrorBox(
+        'OpenBook — dependencies missing',
+        `Using Python at:\n  ${found.exe}\n\nThese modules are not installed:\n  ${check.missing.join('\n  ')}\n\n` +
+        'Fix it by running this in the OpenBook folder:\n' +
+        '  install-deps.bat\n\n' +
+        'Or manually:\n' +
+        '  pip install -r requirements.txt'
+      );
+      app.quit();
+      return;
+    }
   }
 
   const { exe, args } = found;
@@ -176,7 +178,16 @@ function waitForBackend(retries = 30, delay = 500) {
         return reject(new Error('Backend process died or failed to start.'));
       }
       const req = http.get(`${BACKEND_URL}/api/config`, (res) => {
-        resolve();
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          resolve();
+        } else {
+          res.resume();
+          if (n <= 0) {
+            reject(new Error('Backend did not start in time.'));
+          } else {
+            setTimeout(() => attempt(n - 1), delay);
+          }
+        }
       }).on('error', () => {
         if (n <= 0) {
           reject(new Error('Backend did not start in time.'));

@@ -226,13 +226,15 @@ def _pdf_reader(path):
 def parse_pdf(path: str):
     if os.path.getsize(path) > MAX_BYTES:
         raise ValueError("PDF over 100MB limit")
-    reader = _pdf_reader(path)
-    if len(reader.pages) > MAX_PAGES:
-        raise ValueError("PDF over 1000 pages limit")
     out = []
     try:
+        reader = _pdf_reader(path)
+        if len(reader.pages) > MAX_PAGES:
+            raise ValueError("PDF over 1000 pages limit")
         for i, p in enumerate(reader.pages, start=1):
             out.append({"page": i, "text": p.extract_text() or ""})
+    except ValueError:
+        raise
     except Exception as e:
         raise ValueError(f"Corrupt PDF: {e}")
     total = sum(len(p["text"]) for p in out)
