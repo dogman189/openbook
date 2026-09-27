@@ -30,6 +30,7 @@ if (!rend.includes("APP_CONFIG")) throw new Error("renderer missing APP_CONFIG")
 if (!rend.includes("/api/notebooks")) throw new Error("renderer missing /api/notebooks");
 if (!rend.includes("EventSource")) throw new Error("renderer missing EventSource log stream");
 if (!rend.includes("/api/logs")) throw new Error("renderer missing /api/logs");
+if (!rend.includes("line.message")) throw new Error("renderer appendLog missing object-payload support");
 if (!rend.includes("__test_hook")) throw new Error("renderer missing OB.__test_hook");
 if (rend.includes("localhost:8000")) throw new Error("renderer still points at localhost:8000");
 if (/price-chart|getCurrency|currency\.js|nav\.js/.test(html + rend))

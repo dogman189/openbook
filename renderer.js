@@ -230,6 +230,7 @@ window.OB = window.OB || {};
     if (toggle) {
       toggle.addEventListener("click", function () {
         applyTheme(OB.state.theme === "dark" ? "light" : "dark");
+        api.postLog("System: theme " + OB.state.theme).catch(function () {});
       });
     }
   }
@@ -1304,9 +1305,23 @@ window.OB = window.OB || {};
     logCount++;
     if (badge) badge.textContent = logCount + " event" + (logCount !== 1 ? "s" : "");
 
-    var m = String(line).match(/^\[(\d{2}:\d{2}:\d{2})\]\s+(.*)$/);
-    var time = m ? m[1] : "";
-    var msg = m ? m[2] : String(line);
+    var time = "";
+    var msg = "";
+    if (line && typeof line === "object") {
+      // Backend SSE payload: {"message", "ts" (unix seconds)}
+      msg = String(line.message || "");
+      if (typeof line.ts === "number") {
+        var d = new Date(line.ts * 1000);
+        var p2 = function (n) {
+          return (n < 10 ? "0" : "") + n;
+        };
+        time = p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds());
+      }
+    } else {
+      var m = String(line).match(/^\[(\d{2}:\d{2}:\d{2})\]\s+(.*)$/);
+      time = m ? m[1] : "";
+      msg = m ? m[2] : String(line);
+    }
 
     var cls = "";
     if (/error/i.test(msg)) cls = "err";
@@ -1331,6 +1346,7 @@ window.OB = window.OB || {};
   // ---- Notebook selection ------------------------------------------------------------
   function selectNotebook(nid) {
     OB.state.nid = nid;
+    api.postLog("System: opened notebook " + nid).catch(function () {});
     renderSources(nid);
     renderChat(nid);
     renderSummary(nid);

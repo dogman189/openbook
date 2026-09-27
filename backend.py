@@ -674,7 +674,9 @@ def api_create_notebook():
     title = data.get("title")
     if not isinstance(title, str) or not title.strip():
         return jsonify({"error": "title required"}), 400
-    return jsonify({"id": create_notebook(get_db(), title.strip())})
+    nid = create_notebook(get_db(), title.strip())
+    log(f'System: notebook created "{title.strip()}" ({nid})')
+    return jsonify({"id": nid})
 
 
 @app.delete("/api/notebooks/<nid>")
@@ -684,6 +686,7 @@ def api_delete_notebook(nid):
     delete_notebook(get_db(), nid)
     delete_collection(nid)
     shutil.rmtree(UPLOADS_DIR / nid, ignore_errors=True)
+    log(f"System: notebook deleted {nid}")
     return jsonify({"deleted": nid})
 
 
@@ -709,10 +712,15 @@ def api_add_source(nid):
         except ValueError as e:
             # >100MB / >1000 pages limits and the scanned-PDF
             # ("OCR not in v1") warning surface here as 400 with the message.
+            log(f"Error: ingest rejected {safe_name}: {e}")
             return jsonify({"error": str(e)}), 400
         chunks = chunk_text(pages)
         upsert(nid, chunks, source=safe_name)
         save_source(get_db(), nid, safe_name, "pdf", len(pages), str(dest))
+        log(
+            f'System: source added "{safe_name}" '
+            f"({len(pages)} pages, {len(chunks)} chunks)"
+        )
         return jsonify(
             {"sourceId": safe_name, "pages": len(pages), "chunks": len(chunks)}
         )
@@ -723,6 +731,7 @@ def api_add_source(nid):
     chunks = chunk_text([{"page": 1, "text": data["text"]}])
     upsert(nid, chunks, source=title)
     save_source(get_db(), nid, title, "text", 1, "")
+    log(f'System: source added "{title}" (pasted text, {len(chunks)} chunks)')
     return jsonify({"sourceId": title, "pages": 1, "chunks": len(chunks)})
 
 
@@ -741,6 +750,7 @@ def api_chat(nid):
         return jsonify({"error": "query required"}), 422
     db = get_db()
     save_message(db, nid, "user", q)
+    log(f'System: ask "{q.strip()[:60]}"')
     full = []
 
     def gen():
@@ -748,6 +758,7 @@ def api_chat(nid):
             full.append(tok)
             yield f"data: {json.dumps({'token': tok})}\n\n"
         save_message(db, nid, "assistant", "".join(full))
+        log("System: answer done")
         yield "data: [DONE]\n\n"
 
     return Response(gen(), mimetype="text/event-stream")
@@ -760,8 +771,10 @@ def api_summary(nid):
         return jsonify({"error": "summary must be a JSON object"}), 400
     source_ids = data.get("sourceIds") or []
     hits = query(nid, "overview of all key concepts", k=12)
+    log(f"System: summary started ({len(hits)} chunks)")
     result = summarize([{"text": h["text"], "pages": [h["pages"]]} for h in hits])
     save_summary(get_db(), nid, json.dumps(source_ids), json.dumps(result))
+    log("System: summary done")
     return jsonify(result)
 
 
@@ -792,9 +805,12 @@ def api_set_model():
     if not isinstance(data, dict):
         return jsonify({"error": "model must be a JSON object"}), 400
     try:
-        return jsonify(set_llm(data.get("id")))
+        info = set_llm(data.get("id"))
     except ValueError as e:
+        log(f"Error: model switch rejected: {e}")
         return jsonify({"error": str(e)}), 422
+    log(f"System: model switched to {info['llm']}")
+    return jsonify(info)
 
 
 @app.get("/api/logs")
@@ -814,4 +830,5 @@ def api_post_log():
 if __name__ == "__main__":
     ensure_dirs()
     get_db()
+    log("System: engine online | port 5678")
     app.run(host="127.0.0.1", port=5678)

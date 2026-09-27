@@ -13,6 +13,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(backend, "_DB", backend.init_db(str(tmp_path / "api.db")))
     monkeypatch.setattr(backend, "CONFIG_PATH", tmp_path / "config.json")
     monkeypatch.setattr(backend, "UPLOADS_DIR", tmp_path / "uploads")
+    monkeypatch.setattr(backend, "_log_queue", _queue.Queue())
     backend.app.config["TESTING"] = True
     return backend.app.test_client()
 
@@ -125,3 +126,44 @@ def test_log_post_and_stream_shape(client):
     assert next(gen2) == "retry: 1000\n\n"
     assert next(gen2) == ": heartbeat\n\n"
     gen2.close()
+
+
+def _drained_messages():
+    out = []
+    while not backend._log_queue.empty():
+        out.append(backend._log_queue.get_nowait()["message"])
+    return out
+
+
+def test_lifecycle_events_logged(client, nid, monkeypatch):
+    monkeypatch.setattr(backend, "upsert", lambda *a, **k: None)
+    client.post("/api/notebooks", json={"title": "logged nb"})
+    client.post(
+        f"/api/notebooks/{nid}/sources",
+        json={"text": "hello world " * 50, "title": "n.txt"},
+    )
+    client.post("/api/models", json={"id": "Qwen/Qwen2.5-1.5B-Instruct"})
+    assert client.post("/api/models", json={"id": "bogus"}).status_code == 422
+    msgs = _drained_messages()
+    assert any("notebook created" in m for m in msgs)
+    assert any("source added" in m for m in msgs)
+    assert any("model switched" in m for m in msgs)
+    assert any(m.startswith("Error:") for m in msgs)
+
+
+def test_chat_and_summary_log(client, nid, monkeypatch):
+    monkeypatch.setattr(backend, "ask_stream", lambda nid_, q_: iter(["tok"]))
+    r = client.post(f"/api/notebooks/{nid}/chat", json={"query": "what is x?"})
+    assert r.status_code == 200
+    assert b"[DONE]" in r.data
+    monkeypatch.setattr(backend, "query", lambda nid_, q_, k=6: [])
+    monkeypatch.setattr(
+        backend,
+        "summarize",
+        lambda chunks: {"summary": "s", "key_terms": [], "outline": []},
+    )
+    assert client.post(f"/api/notebooks/{nid}/summary", json={}).status_code == 200
+    msgs = _drained_messages()
+    assert any(m.startswith("System: ask") for m in msgs)
+    assert any("answer done" in m for m in msgs)
+    assert any("summary" in m for m in msgs)
