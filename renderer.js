@@ -1157,6 +1157,7 @@ window.OB = window.OB || {};
           current = String((data && data.llm) || mid);
           showCustom = false;
           custom = "";
+          busy = false;
           return load();
         })
         .catch(function (e) {
@@ -1197,6 +1198,8 @@ window.OB = window.OB || {};
         sel.appendChild(opt);
       });
       sel.appendChild(el("option", { text: "Custom HF id…", attrs: { value: "custom" } }));
+      if (inPresets) sel.value = current;
+      else sel.value = "custom";
       kids.push(sel);
 
       if (!inPresets && current) {
