@@ -10,13 +10,15 @@
 import json
 import os
 import platform
+import queue
+import re
 import sqlite3
 import sys
 import time
 import uuid
 from pathlib import Path
 
-from flask import Flask, jsonify, request
+from flask import Flask, Response, jsonify, request
 
 try:
     from flask_cors import CORS
@@ -345,7 +347,276 @@ AVAILABLE_MODELS = [
 
 
 def model_info():
-    return {"llm": LLM_ID, "embed": EMBED_ID, "device": "cpu", "engine": "transformers"}
+    return {"llm": LLM_ID, "embed": EMBED_ID, "device": _device(), "engine": "transformers"}
+
+
+# ------------------------------------------- MODELS (full, lazy) ----
+# Full lazy pipeline. torch/transformers/sentence_transformers import inside
+# functions only — the module stays importable with all of them missing.
+_ID_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+_llm_pipe = None
+_embed_model = None
+
+
+def get_llm() -> str:
+    return LLM_ID
+
+
+def set_llm(model_id: str) -> dict:
+    # Custom HF ids allowed but must look like "org/name" — blocks path
+    # traversal and URLs. Unloads the old pipeline so VRAM is freed.
+    global LLM_ID, _llm_pipe
+    mid = (model_id or "").strip()
+    if not _ID_RE.match(mid):
+        raise ValueError(f"Not a valid HuggingFace model id: {model_id!r}")
+    if _llm_pipe is not None:
+        _llm_pipe = None
+        import gc
+
+        gc.collect()
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+    LLM_ID = mid
+    return model_info()
+
+
+def _device() -> str:
+    try:
+        import torch
+
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    except Exception:
+        return "cpu"
+
+
+def _strip_thinking(text: str) -> str:
+    # Reasoning models wrap chain-of-thought in <think> tags — never show it.
+    # Also handles unclosed tags when generation stops mid-thought.
+    cleaned = _THINK_RE.sub("", text)
+    if re.search(r"<think>", cleaned, re.IGNORECASE):
+        cleaned = re.split(r"<think>", cleaned, flags=re.IGNORECASE)[0]
+    return cleaned.strip()
+
+
+def _chat_wrap(prompt: str) -> str:
+    # Qwen-Instruct models need their chat template — raw prompts make small
+    # models ramble or continue list patterns instead of answering.
+    if _llm_pipe is not None and hasattr(_llm_pipe, "tokenizer"):
+        try:
+            return _llm_pipe.tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+        except Exception:
+            pass
+    return prompt
+
+
+def llm_generate(prompt: str, max_new_tokens: int = 512) -> str:
+    global _llm_pipe
+    if _llm_pipe is None:
+        from transformers import pipeline
+
+        _llm_pipe = pipeline("text-generation", model=LLM_ID, device_map="auto")
+    full_prompt = _chat_wrap(prompt)
+    out = _llm_pipe(
+        full_prompt,
+        max_new_tokens=max_new_tokens,
+        do_sample=False,
+        repetition_penalty=1.15,
+    )
+    text = out[0]["generated_text"]
+    if text.startswith(full_prompt):
+        text = text[len(full_prompt):]
+    return _strip_thinking(text)
+
+
+def llm_stream(prompt: str, chunk: int = 120):
+    full = llm_generate(prompt)
+    for i in range(0, len(full), chunk):
+        yield full[i:i + chunk]
+
+
+def embed_texts(texts):
+    global _embed_model
+    if _embed_model is None:
+        from sentence_transformers import SentenceTransformer
+
+        _embed_model = SentenceTransformer(EMBED_ID, device=_device())
+    vecs = _embed_model.encode([t[:4000] for t in texts], show_progress_bar=False)
+    return [list(map(float, v)) for v in vecs]
+
+
+# ---------------------------------------------------------------- RAG ----
+_chroma_client = None
+
+
+def _rag_client():
+    # Lazy singleton — chromadb connects only on first vector op, so the
+    # module imports and every non-RAG route works without it installed.
+    global _chroma_client
+    if _chroma_client is None:
+        try:
+            import chromadb
+        except Exception as e:
+            raise RuntimeError(
+                "chromadb is not installed — RAG storage unavailable"
+            ) from e
+        ensure_dirs()
+        _chroma_client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+    return _chroma_client
+
+
+def _col(notebook_id: str):
+    return _rag_client().get_or_create_collection(f"nb_{notebook_id}")
+
+
+def delete_collection(notebook_id: str):
+    try:
+        _rag_client().delete_collection(f"nb_{notebook_id}")
+    except Exception:
+        pass
+
+
+def embed(texts):
+    return embed_texts(texts)
+
+
+def upsert(notebook_id, chunks, source=""):
+    col = _col(notebook_id)
+    ids = [f"{source}:{c['chunk_id']}" for c in chunks]
+    vecs = embed([c["text"] for c in chunks])
+    col.upsert(
+        ids=ids,
+        embeddings=vecs,
+        documents=[c["text"] for c in chunks],
+        metadatas=[
+            {"pages": ",".join(map(str, c["pages"])), "source": source}
+            for c in chunks
+        ],
+    )
+
+
+def query(notebook_id, q, k=6):
+    col = _col(notebook_id)
+    qv = embed([q])[0]
+    res = col.query(query_embeddings=[qv], n_results=k)
+    return [
+        {"text": doc, "pages": meta["pages"], "source": meta["source"]}
+        for doc, meta in zip(res["documents"][0], res["metadatas"][0])
+    ]
+
+
+# --------------------------------------------------------------- CHAT ----
+SYSTEM = """Answer ONLY from context. Cite every fact as [sourceName p.N].
+If not in context, reply exactly: Not in your sources."""
+
+
+def build_prompt(q, hits):
+    ctx = "\n\n".join(f"[{h['source']} p.{h['pages']}] {h['text'][:1500]}" for h in hits)
+    return f"{SYSTEM}\n\nContext:\n{ctx}\n\nQuestion: {q}"
+
+
+def ask_stream(notebook_id, q):
+    hits = query(notebook_id, q, k=6)
+    yield from llm_stream(build_prompt(q, hits))
+
+
+# ------------------------------------------------------------ SUMMARY ----
+def _llm(prompt: str, max_new_tokens: int = 512) -> str:
+    return llm_generate(prompt, max_new_tokens=max_new_tokens)
+
+
+MAP_PROMPT = (
+    "Summarize the following study material in EXACTLY 3 short bullets.\n"
+    "Rules: each bullet under 20 words, plain dashes (-), no numbering, "
+    "no preamble, no repeating the same phrase.\n\nMaterial:\n"
+)
+
+REDUCE_PROMPT = (
+    "Combine these notes into a study guide with EXACTLY these 3 sections, "
+    "using the headers shown. Keep it tight — no numbered lists past 8 items, "
+    "never repeat one phrase more than twice.\n\n"
+    "SUMMARY: (4-6 sentences of prose, no lists)\n"
+    "KEY TERMS: (up to 8 short noun phrases, one per line starting with -)\n"
+    "OUTLINE: (up to 6 short headings, one per line starting with -)\n\nNotes:\n"
+)
+
+
+def _parse_sections(text: str):
+    # Pull the 3 labeled sections out of the reduce output. Anything the
+    # model puts outside the labels is ignored so loops can't leak through.
+    sections = {"SUMMARY": [], "KEY TERMS": [], "OUTLINE": []}
+    current = None
+    for line in text.splitlines():
+        stripped = line.strip()
+        # Header = name before the colon (case-insensitive) so inline
+        # text after the header ("SUMMARY: prose") still matches.
+        if ":" in stripped:
+            head = stripped.split(":", 1)[0].strip().upper()
+        else:
+            head = stripped.upper()
+        if head in sections:
+            current = head
+            rest = line.split(":", 1)[1].strip() if ":" in line else ""
+            if rest:
+                sections[current].append(rest)
+            continue
+        if current is None:
+            continue
+        s = line.strip()
+        if not s:
+            continue
+        # Hard cap per section so runaway numbered lists can't leak through.
+        if len(sections[current]) >= 8:
+            continue
+        sections[current].append(s.lstrip("-•* ").strip())
+    summary = " ".join(sections["SUMMARY"])[:1500]
+    key_terms = [t[:80] for t in sections["KEY TERMS"][:8] if t]
+    outline = [t[:120] for t in sections["OUTLINE"][:6] if t]
+    return summary, key_terms, outline
+
+
+def summarize(chunks):
+    bullets = []
+    for c in chunks[:8]:
+        bullets.append(_llm(MAP_PROMPT + c["text"][:2000], max_new_tokens=150))
+    joined = "\n".join(f"- {b.strip()}" for b in bullets)[:6000]
+    final = _llm(REDUCE_PROMPT + joined, max_new_tokens=600)
+    summary, key_terms, outline = _parse_sections(final)
+    if not summary:
+        summary = final[:1500]
+    if not key_terms:
+        key_terms = [b.strip()[:80] for b in bullets[:5] if b.strip()]
+    if not outline:
+        outline = [b.strip()[:120] for b in bullets[:6] if b.strip()]
+    return {"summary": summary, "key_terms": key_terms, "outline": outline}
+
+
+# --------------------------------------------------------------- LOGS ----
+_log_queue: "queue.Queue" = queue.Queue()
+
+
+def log(message: str) -> None:
+    _log_queue.put({"message": str(message), "ts": time.time()})
+
+
+def _logs_generate(src=None, timeout=15):
+    q = src if src is not None else _log_queue
+    yield "retry: 1000\n\n"
+    while True:
+        try:
+            yield f"data: {json.dumps(q.get(timeout=timeout))}\n\n"
+        except queue.Empty:
+            yield ": heartbeat\n\n"
 
 
 # ---------------------------------------------------------------- FLASK ----
@@ -385,6 +656,157 @@ def api_post_config():
 def api_health():
     info = model_info()
     return jsonify({"backend": "ok", **info, "specs": get_specs()})
+
+
+# ------------------------------------------------------ NOTEBOOKS API ----
+@app.get("/api/notebooks")
+def api_list_notebooks():
+    return jsonify(list_notebooks(get_db()))
+
+
+@app.post("/api/notebooks")
+def api_create_notebook():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "notebook must be a JSON object"}), 400
+    title = data.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return jsonify({"error": "title required"}), 400
+    return jsonify({"id": create_notebook(get_db(), title.strip())})
+
+
+@app.delete("/api/notebooks/<nid>")
+def api_delete_notebook(nid):
+    import shutil
+
+    delete_notebook(get_db(), nid)
+    delete_collection(nid)
+    shutil.rmtree(UPLOADS_DIR / nid, ignore_errors=True)
+    return jsonify({"deleted": nid})
+
+
+@app.get("/api/notebooks/<nid>/sources")
+def api_list_sources(nid):
+    return jsonify(list_sources(get_db(), nid))
+
+
+@app.post("/api/notebooks/<nid>/sources")
+def api_add_source(nid):
+    # Single endpoint serves both ingest paths: PDF upload (multipart file)
+    # and pasted text (JSON body with `text`).
+    os.makedirs(UPLOADS_DIR / nid, exist_ok=True)
+    f = request.files.get("file")
+    if f is not None and f.filename:
+        # basename() keeps a crafted name like "../../x.pdf" from escaping
+        # the uploads dir, and doubles as the display name in SQLite/Chroma.
+        safe_name = os.path.basename(f.filename)
+        dest = UPLOADS_DIR / nid / safe_name
+        f.save(str(dest))
+        try:
+            pages = parse_pdf(str(dest))
+        except ValueError as e:
+            # >100MB / >1000 pages limits and the scanned-PDF
+            # ("OCR not in v1") warning surface here as 400 with the message.
+            return jsonify({"error": str(e)}), 400
+        chunks = chunk_text(pages)
+        upsert(nid, chunks, source=safe_name)
+        save_source(get_db(), nid, safe_name, "pdf", len(pages), str(dest))
+        return jsonify(
+            {"sourceId": safe_name, "pages": len(pages), "chunks": len(chunks)}
+        )
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict) or not data.get("text"):
+        return jsonify({"error": "text required"}), 422
+    title = data.get("title") or "paste.txt"
+    chunks = chunk_text([{"page": 1, "text": data["text"]}])
+    upsert(nid, chunks, source=title)
+    save_source(get_db(), nid, title, "text", 1, "")
+    return jsonify({"sourceId": title, "pages": 1, "chunks": len(chunks)})
+
+
+@app.get("/api/notebooks/<nid>/messages")
+def api_list_messages(nid):
+    return jsonify(list_messages(get_db(), nid))
+
+
+@app.post("/api/notebooks/<nid>/chat")
+def api_chat(nid):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "chat must be a JSON object"}), 400
+    q = data.get("query")
+    if not isinstance(q, str) or not q.strip():
+        return jsonify({"error": "query required"}), 422
+    db = get_db()
+    save_message(db, nid, "user", q)
+    full = []
+
+    def gen():
+        for tok in ask_stream(nid, q):
+            full.append(tok)
+            yield f"data: {json.dumps({'token': tok})}\n\n"
+        save_message(db, nid, "assistant", "".join(full))
+        yield "data: [DONE]\n\n"
+
+    return Response(gen(), mimetype="text/event-stream")
+
+
+@app.post("/api/notebooks/<nid>/summary")
+def api_summary(nid):
+    data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "summary must be a JSON object"}), 400
+    source_ids = data.get("sourceIds") or []
+    hits = query(nid, "overview of all key concepts", k=12)
+    result = summarize([{"text": h["text"], "pages": [h["pages"]]} for h in hits])
+    save_summary(get_db(), nid, json.dumps(source_ids), json.dumps(result))
+    return jsonify(result)
+
+
+@app.get("/api/notebooks/<nid>/summaries")
+def api_list_summaries(nid):
+    return jsonify(list_summaries(get_db(), nid))
+
+
+@app.get("/api/models")
+def api_list_models():
+    specs = get_specs()
+    return jsonify(
+        {
+            "current": get_llm(),
+            "available": [
+                {**m, **fits_model(m["id"], specs)} for m in AVAILABLE_MODELS
+            ],
+            "specs": specs,
+            "recommended": recommend_llm(specs),
+            "current_fit": fits_model(get_llm(), specs),
+        }
+    )
+
+
+@app.post("/api/models")
+def api_set_model():
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "model must be a JSON object"}), 400
+    try:
+        return jsonify(set_llm(data.get("id")))
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+
+
+@app.get("/api/logs")
+def api_logs():
+    return Response(_logs_generate(), mimetype="text/event-stream")
+
+
+@app.post("/api/log")
+def api_post_log():
+    body = request.get_json(silent=True) or {}
+    message = body.get("message", "") if isinstance(body, dict) else ""
+    if message:
+        log(message)
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
