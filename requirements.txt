@@ -1,0 +1,12 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
+flask>=3.0
+flask-cors
+pypdf==4.2.0
+chromadb==0.5.5
+torch==2.14.0+cu126
+transformers==4.48.3
+accelerate==1.2.1
+sentence-transformers==3.4.1
+pytest
+httpx
+psutil
