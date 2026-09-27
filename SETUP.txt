@@ -1,0 +1,36 @@
+OpenBook - portable Windows build (Phase 1: dir-pack + .venv fallback)
+=============================================================================
+Backend: http://127.0.0.1:5678 (all routes under /api/*). Onefile backend.exe
+is deferred to Phase 2 - this folder runs backend.py from .venv instead.
+
+This folder is a portable app. Nothing is installed into Windows; everything
+OpenBook creates (notes, vectors, models) stays in this folder (OPENBOOK_HOME).
+
+FIRST RUN (one time only)
+-------------------------
+1. Double-click install-deps.bat
+   - Installs Python libraries into .venv\ inside this folder
+   - Downloads torch. The pinned NVIDIA build (torch==2.14.0+cu126) is
+     ~4.2GB, so allow time.
+   - No NVIDIA GPU? Edit requirements.txt first and replace
+     torch==2.14.0+cu126  with  torch==2.14.0
+     for a ~200MB CPU-only wheel (slower, but works anywhere).
+
+2. Double-click OpenBook.exe
+   - It starts backend.py from .venv and waits for GET /api/config,
+     then opens the study window.
+
+Requires Python 3.11+ to be installed on the machine
+(https://www.python.org/downloads/ - tick "Add Python to PATH").
+OpenBook tells you if something is missing.
+
+WHERE YOUR DATA LIVES
+---------------------
+  openbook.db          notebooks, sources, chat history, summaries
+  config.json          saved renderer config (theme, last notebook)
+  data/uploads/        your original PDFs and pasted text
+  data/vectors/chroma/ search index (safe to delete; re-created on re-add)
+  models/              downloaded model weights (Qwen, several GB)
+
+Delete the whole folder to uninstall. Windows may warn about an unknown
+publisher on first launch - the app is unsigned, so choose "Run anyway".
