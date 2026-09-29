@@ -174,6 +174,15 @@ window.OB = window.OB || {};
         return jsonOrThrow(r, "Switch model");
       });
     },
+    setEngine: function (body) {
+      return fetch(url("/api/engine"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      }).then(function (r) {
+        return jsonOrThrow(r, "Engine");
+      });
+    },
     chatStream: function (nid, query, signal) {
       return fetch(url("/api/notebooks/" + encodeURIComponent(nid) + "/chat"), {
         method: "POST",
@@ -1119,6 +1128,227 @@ window.OB = window.OB || {};
   }
 
   // ---- Model picker ---------------------------------------------------------------
+  // ---- Engine (local vs OpenRouter cloud) --------------------------------------
+  // Cloud is strictly opt-in: switching shows where notebook content goes.
+  // The key is write-only — the backend never sends it back, so the input
+  // only ever shows a placeholder, never a stored value.
+  function renderEngine() {
+    var slot = document.getElementById("engine-slot");
+    if (!slot) return;
+
+    var engine = "local";
+    var model = "";
+    var models = [];
+    var keySet = false;
+    var keyInput = "";
+    var showKey = false;
+    var busy = false;
+    var errorMsg = null;
+    var savedNote = "";
+
+    function load() {
+      return api
+        .listModels()
+        .then(function (data) {
+          var eng = (data && data.engine) || {};
+          engine = eng.engine === "openrouter" ? "openrouter" : "local";
+          model = String(eng.openrouter_model || "");
+          models = Array.isArray(eng.openrouter_models) ? eng.openrouter_models : [];
+          keySet = !!eng.openrouter_key_set;
+          errorMsg = null;
+          paint();
+        })
+        .catch(function () {
+          // backend down — HealthBanner owns that error
+        });
+    }
+
+    function save(body, note) {
+      busy = true;
+      errorMsg = null;
+      savedNote = "";
+      paint();
+      api
+        .setEngine(body)
+        .then(function () {
+          keyInput = "";
+          showKey = false;
+          savedNote = note || "Saved.";
+          return load();
+        })
+        .catch(function (e) {
+          errorMsg = (e && e.message) || "Couldn't save engine settings.";
+          busy = false;
+          paint();
+        });
+    }
+
+    function paint() {
+      var kids = [];
+      kids.push(el("h3", { class: "panel-subtitle", text: "Engine" }));
+
+      var toggle = el("div", {
+        class: "row",
+        children: [
+          el("button", {
+            class: "btn btn-sm" + (engine === "local" ? " btn-primary" : " btn-ghost"),
+            text: "Local",
+            attrs: busy ? { disabled: true } : {},
+            on: {
+              click: function () {
+                if (engine !== "local") save({ engine: "local" }, "Local engine active — fully offline.");
+              },
+            },
+          }),
+          el("button", {
+            class: "btn btn-sm" + (engine === "openrouter" ? " btn-primary" : " btn-ghost"),
+            text: "OpenRouter",
+            attrs: busy ? { disabled: true } : {},
+            on: {
+              click: function () {
+                if (engine !== "openrouter") save({ engine: "openrouter" }, "Cloud engine active.");
+              },
+            },
+          }),
+        ],
+      });
+      kids.push(toggle);
+
+      if (engine === "openrouter") {
+        kids.push(
+          el("p", {
+            class: "hint hint-mt muted",
+            text: "Cloud sends your notebook content to OpenRouter. Key stays on this laptop.",
+          })
+        );
+
+        var sel = el("select", {
+          class: "input model-select",
+          attrs: { "aria-label": "OpenRouter model" },
+          on: {
+            change: function (e) {
+              save({ openrouter_model: e.target.value }, "Model saved.");
+            },
+          },
+        });
+        if (busy) sel.setAttribute("disabled", "");
+        var listed = models.some(function (m) {
+          return m.id === model;
+        });
+        models.forEach(function (m) {
+          sel.appendChild(el("option", { text: m.label, attrs: { value: m.id } }));
+        });
+        if (!listed && model) {
+          sel.appendChild(el("option", { text: model + " (custom)", attrs: { value: model } }));
+        }
+        sel.value = model;
+        kids.push(sel);
+
+        var keyRow = el("div", {
+          class: "model-custom",
+          children: [
+            el("span", {
+              class: "hint muted",
+              text: keySet ? "Key saved (hidden)." : "No key saved yet.",
+            }),
+          ],
+        });
+        if (showKey) {
+          var input = el("input", {
+            class: "input",
+            attrs: {
+              type: "password",
+              "aria-label": "OpenRouter API key",
+              placeholder: "sk-or-…",
+              autocomplete: "off",
+            },
+            on: {
+              input: function (e) {
+                keyInput = e.target.value;
+              },
+              keydown: function (e) {
+                if (e.key === "Enter" && keyInput.trim()) {
+                  save({ openrouter_key: keyInput.trim() }, "Key saved.");
+                }
+              },
+            },
+          });
+          input.value = keyInput;
+          keyRow.appendChild(input);
+          keyRow.appendChild(
+            el("div", {
+              class: "model-custom-actions",
+              children: [
+                el("button", {
+                  class: "btn btn-primary btn-sm",
+                  text: busy ? "Saving…" : "Save key",
+                  attrs: busy || !keyInput.trim() ? { disabled: true } : {},
+                  on: {
+                    click: function () {
+                      if (keyInput.trim()) save({ openrouter_key: keyInput.trim() }, "Key saved.");
+                    },
+                  },
+                }),
+                el("button", {
+                  class: "btn btn-ghost btn-sm",
+                  text: "Cancel",
+                  on: {
+                    click: function () {
+                      showKey = false;
+                      keyInput = "";
+                      paint();
+                    },
+                  },
+                }),
+              ],
+            })
+          );
+        } else {
+          keyRow.appendChild(
+            el("button", {
+              class: "btn btn-ghost btn-sm",
+              text: keySet ? "Replace key" : "Add key",
+              attrs: busy ? { disabled: true } : {},
+              on: {
+                click: function () {
+                  showKey = true;
+                  paint();
+                },
+              },
+            })
+          );
+          if (keySet) {
+            keyRow.appendChild(
+              el("button", {
+                class: "btn btn-ghost btn-sm",
+                text: "Clear",
+                attrs: busy ? { disabled: true } : {},
+                on: {
+                  click: function () {
+                    save({ openrouter_key: "" }, "Key cleared — cloud asks will fail until a new one is saved.");
+                  },
+                },
+              })
+            );
+          }
+        }
+        kids.push(keyRow);
+      }
+
+      if (savedNote) {
+        kids.push(el("span", { class: "success", text: savedNote }));
+      }
+      if (errorMsg) {
+        kids.push(el("div", { class: "alert alert-error alert-mb", text: errorMsg }));
+      }
+
+      mount("engine-slot", [kids]);
+    }
+
+    load();
+    OB.reloadEngine = load;
+  }
+
   function renderModelPicker() {
     var slot = document.getElementById("model-picker");
     if (!slot) return;
@@ -1359,6 +1589,7 @@ window.OB = window.OB || {};
   OB.renderChat = renderChat;
   OB.renderSummary = renderSummary;
   OB.renderModelPicker = renderModelPicker;
+  OB.renderEngine = renderEngine;
 
   // ---- Boot -----------------------------------------------------------------------------
   function waitForBackend(retries, delay) {
@@ -1402,6 +1633,7 @@ window.OB = window.OB || {};
     renderHealth();
     renderNotebooks();
     renderModelPicker();
+    renderEngine();
     renderChat(null);
     if (window.SETUP && window.SETUP.getStatus) {
       window.SETUP.getStatus()

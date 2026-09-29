@@ -46,14 +46,14 @@ curl http://127.0.0.1:5678/api/health
 ```
 
 ### GET /api/models
-Model switcher payload: current id, 4 presets each with GPU fit, specs, recommended pick, current fit.
+Model switcher payload: current id, 4 presets each with GPU fit, specs, recommended pick, current fit, plus the engine block (active engine, OpenRouter model/presets, key-set flag — never the key).
 
 ```bash
 curl http://127.0.0.1:5678/api/models
 ```
 **Response:**
 ```json
-{ "current": "Qwen/Qwen3-0.6B", "available": [{ "id": "Qwen/Qwen3-0.6B", "label": "Qwen 0.6B — fastest", "vram": "~2GB", "min_vram": 2, "fits": true, "reason": "CPU-safe choice" }], "specs": {}, "recommended": "Qwen/Qwen3-0.6B", "current_fit": { "fits": true, "reason": "CPU-safe choice" } }
+{ "current": "Qwen/Qwen3-0.6B", "available": [{ "id": "Qwen/Qwen3-0.6B", "label": "Qwen 0.6B — fastest", "vram": "~2GB", "min_vram": 2, "fits": true, "reason": "CPU-safe choice" }], "specs": {}, "recommended": "Qwen/Qwen3-0.6B", "current_fit": { "fits": true, "reason": "CPU-safe choice" }, "engine": { "engine": "local", "openrouter_model": "openai/gpt-4o-mini", "openrouter_models": [{ "id": "openai/gpt-4o-mini", "label": "GPT-4o mini — fast + cheap" }], "openrouter_key_set": false } }
 ```
 
 ### POST /api/models
@@ -67,6 +67,19 @@ curl -X POST http://127.0.0.1:5678/api/models -H "Content-Type: application/json
 **Errors:**
 - 400 - Non-object body: `{ "error": "model must be a JSON object" }`
 - 422 - Bad id (not `org/name`): `{ "error": "Not a valid HuggingFace model id: 'bogus'" }`
+
+### POST /api/engine
+Switch the active engine (`local`| `openrouter`), cloud model, and key. The key is write-only: it is stored in local `config.json` and never echoed back — `GET /api/config` only reports `openrouter_key_set`. Switching engine is logged; the key value never is. Overrides: `OPENBOOK_ENGINE`, `OPENBOOK_API_KEY` (or `OPENROUTER_API_KEY`), `OPENBOOK_OPENROUTER_MODEL`.
+
+```bash
+curl -X POST http://127.0.0.1:5678/api/engine -H "Content-Type: application/json" -d "{\"engine\":\"openrouter\",\"openrouter_model\":\"openai/gpt-4o-mini\",\"openrouter_key\":\"sk-or-...\"}"
+```
+**Response:** `{ "engine": "openrouter", "openrouter_model": "openai/gpt-4o-mini", "openrouter_models": [...], "openrouter_key_set": true }`
+**Errors:**
+- 400 - Non-object body: `{ "error": "engine must be a JSON object" }`
+- 422 - Unknown engine: `{ "error": "Unknown engine: 'skynet' (want local|openrouter)" }`
+
+Cloud asks stream exactly like local ones (`data: {"token"}` … `data: [DONE]`). Provider failures surface in-chat as `Error: OpenRouter: …` (invalid key, out of credits, rate limited) instead of a dead stream.
 
 ### GET /api/notebooks
 List Notebooks ordered by creation (newest first).

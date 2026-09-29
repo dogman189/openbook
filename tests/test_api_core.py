@@ -26,11 +26,13 @@ def test_health_shape(client):
 
 
 def test_config_roundtrip(client):
-    assert client.get("/api/config").get_json() == {}
+    assert client.get("/api/config").get_json() == {"openrouter_key_set": False}
     r = client.post("/api/config", json={"theme": "dark", "lastNotebook": "abc"})
     assert r.status_code == 200
     assert r.get_json() == {"theme": "dark", "lastNotebook": "abc"}
-    assert client.get("/api/config").get_json()["theme"] == "dark"
+    body = client.get("/api/config").get_json()
+    assert body["theme"] == "dark"
+    assert body["openrouter_key_set"] is False
 
 
 def test_config_rejects_non_object(client):

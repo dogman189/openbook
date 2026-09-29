@@ -453,7 +453,15 @@ AVAILABLE_MODELS = [
 
 
 def model_info():
-    return {"llm": LLM_ID, "embed": EMBED_ID, "device": _device(), "engine": "transformers"}
+    return {
+        "llm": LLM_ID,
+        "embed": EMBED_ID,
+        "device": _device(),
+        "engine": "transformers",
+        "active_engine": get_engine(),
+        "openrouter_model": get_openrouter_model(),
+        "openrouter_key_set": bool(get_openrouter_key()),
+    }
 
 
 # ------------------------------------------- MODELS (full, lazy) ----
@@ -468,6 +476,194 @@ _embed_model = None
 
 def get_llm() -> str:
     return LLM_ID
+
+
+# ----------------------------------------------- ENGINE (local/cloud) ----
+# Cloud models via OpenRouter are strictly opt-in: the default engine is
+# local, and switching requires an explicit Studio action. Notebook content
+# leaves the laptop only when the engine is openrouter.
+OPENROUTER_API_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELS = [
+    {"id": "anthropic/claude-sonnet-4", "label": "Claude Sonnet 4 — best quality"},
+    {"id": "openai/gpt-4o-mini", "label": "GPT-4o mini — fast + cheap"},
+    {"id": "google/gemini-2.0-flash-001", "label": "Gemini Flash — fast + cheap"},
+]
+DEFAULT_OPENROUTER_MODEL = "openai/gpt-4o-mini"
+
+
+def get_engine() -> str:
+    env = os.getenv("OPENBOOK_ENGINE", "").strip().lower()
+    if env in ("local", "openrouter"):
+        return env
+    saved = load_config().get("engine", "local")
+    return saved if saved in ("local", "openrouter") else "local"
+
+
+def set_engine(name: str) -> dict:
+    mid = (name or "").strip().lower()
+    if mid not in ("local", "openrouter"):
+        raise ValueError(f"Unknown engine: {name!r} (want local|openrouter)")
+    save_config({"engine": mid})
+    log(f"System: engine switched to {mid}")
+    return engine_status()
+
+
+def get_openrouter_key() -> str:
+    env = os.getenv("OPENBOOK_API_KEY", "") or os.getenv("OPENROUTER_API_KEY", "")
+    if env.strip():
+        return env.strip()
+    saved = load_config().get("openrouter_key", "")
+    return saved.strip() if isinstance(saved, str) else ""
+
+
+def get_openrouter_model() -> str:
+    env = os.getenv("OPENBOOK_OPENROUTER_MODEL", "").strip()
+    if env:
+        return env
+    saved = load_config().get("openrouter_model", "")
+    if isinstance(saved, str) and saved.strip():
+        return saved.strip()
+    return DEFAULT_OPENROUTER_MODEL
+
+
+def set_openrouter_model(model_id: str) -> dict:
+    mid = (model_id or "").strip()
+    if not mid:
+        raise ValueError("OpenRouter model id required")
+    save_config({"openrouter_model": mid})
+    return engine_status()
+
+
+def engine_status() -> dict:
+    return {
+        "engine": get_engine(),
+        "openrouter_model": get_openrouter_model(),
+        "openrouter_models": OPENROUTER_MODELS,
+        "openrouter_key_set": bool(get_openrouter_key()),
+    }
+
+
+class OpenRouterError(ValueError):
+    pass
+
+
+def _openrouter_request(payload: dict, stream: bool):
+    # stdlib only — no new dependencies for the cloud path.
+    import urllib.error
+    import urllib.request
+
+    key = get_openrouter_key()
+    if not key:
+        raise OpenRouterError("OpenRouter key missing — add it in Studio → Engine.")
+    body = json.dumps({**payload, "stream": stream}).encode("utf-8")
+    req = urllib.request.Request(
+        OPENROUTER_API_URL,
+        data=body,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/dogman189/openbook",
+            "X-Title": "OpenBook",
+        },
+        method="POST",
+    )
+    try:
+        return urllib.request.urlopen(req, timeout=180)
+    except urllib.error.HTTPError as e:
+        try:
+            detail = json.loads(e.read().decode("utf-8", "replace"))
+            msg = detail.get("error", {}).get("message", "") or detail.get("message", "")
+        except Exception:
+            msg = ""
+        if e.code == 401:
+            raise OpenRouterError("OpenRouter: invalid API key.") from e
+        if e.code == 402:
+            raise OpenRouterError("OpenRouter: out of credits.") from e
+        if e.code == 429:
+            raise OpenRouterError("OpenRouter: rate limited — try again shortly.") from e
+        raise OpenRouterError(f"OpenRouter: HTTP {e.code}{f' — {msg}' if msg else ''}.") from e
+    except Exception as e:
+        raise OpenRouterError(f"OpenRouter: request failed ({e}).") from e
+
+
+def _openrouter_messages(prompt: str) -> list:
+    # build_prompt() already shapes the grounded prompt; split it so the
+    # instruction rides as the system message and the notes as the user turn.
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are a study assistant. Use ONLY the provided lecture notes. "
+                "Cite every fact like [lec1.pdf p.3]. "
+                "If the notes lack the answer, reply exactly: Not in your sources."
+            ),
+        },
+        {"role": "user", "content": prompt},
+    ]
+
+
+def _openrouter_complete(prompt: str, max_new_tokens: int = 512) -> str:
+    resp = _openrouter_request(
+        {
+            "model": get_openrouter_model(),
+            "messages": _openrouter_messages(prompt),
+            "max_tokens": max_new_tokens,
+        },
+        stream=False,
+    )
+    try:
+        data = json.loads(resp.read().decode("utf-8"))
+        return (data["choices"][0]["message"].get("content") or "").strip()
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
+
+
+def _openrouter_delta(line: bytes):
+    # One SSE line -> reply text, "[DONE]", or None (comment/garbage).
+    text = line.decode("utf-8", "replace").strip()
+    if not text.startswith("data:"):
+        return None
+    payload = text[len("data:"):].strip()
+    if payload == "[DONE]":
+        return "[DONE]"
+    try:
+        return json.loads(payload)["choices"][0].get("delta", {}).get("content") or None
+    except Exception:
+        return None
+
+
+def _openrouter_stream(prompt: str):
+    resp = _openrouter_request(
+        {
+            "model": get_openrouter_model(),
+            "messages": _openrouter_messages(prompt),
+        },
+        stream=True,
+    )
+    try:
+        buf = b""
+        for raw in resp:
+            buf += raw
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                piece = _openrouter_delta(line)
+                if piece == "[DONE]":
+                    return
+                if piece:
+                    yield piece
+        # A trailing frame without a newline terminator still counts.
+        if buf.strip():
+            piece = _openrouter_delta(buf)
+            if piece and piece != "[DONE]":
+                yield piece
+    finally:
+        try:
+            resp.close()
+        except Exception:
+            pass
 
 
 def set_llm(model_id: str) -> dict:
@@ -527,6 +723,8 @@ def _chat_wrap(prompt: str) -> str:
 
 
 def llm_generate(prompt: str, max_new_tokens: int = 512) -> str:
+    if get_engine() == "openrouter":
+        return _openrouter_complete(prompt, max_new_tokens)
     global _llm_pipe
     if _llm_pipe is None:
         from transformers import pipeline
@@ -546,6 +744,9 @@ def llm_generate(prompt: str, max_new_tokens: int = 512) -> str:
 
 
 def llm_stream(prompt: str, chunk: int = 120):
+    if get_engine() == "openrouter":
+        yield from _openrouter_stream(prompt)
+        return
     full = llm_generate(prompt)
     for i in range(0, len(full), chunk):
         yield full[i:i + chunk]
@@ -654,7 +855,13 @@ def ask_stream(notebook_id, q):
     if not hits:
         yield "Not in your sources."
         return
-    yield from llm_stream(build_prompt(q, hits))
+    try:
+        yield from llm_stream(build_prompt(q, hits))
+    except OpenRouterError as e:
+        # Key/credit/rate problems must surface in-chat, not as a dead
+        # stream. The message is never the key itself.
+        log(f"Error: ask failed: {e}")
+        yield f"Error: {e}"
 
 
 # ------------------------------------------------------------ SUMMARY ----
@@ -768,7 +975,11 @@ def get_db():
 
 @app.get("/api/config")
 def api_get_config():
-    return jsonify(load_config())
+    # The OpenRouter key is write-only over this API: readers learn only
+    # whether one is set, never the value itself.
+    data = {k: v for k, v in load_config().items() if k != "openrouter_key"}
+    data["openrouter_key_set"] = bool(get_openrouter_key())
+    return jsonify(data)
 
 
 @app.post("/api/config")
@@ -920,6 +1131,7 @@ def api_list_models():
             "specs": specs,
             "recommended": recommend_llm(specs),
             "current_fit": fits_model(get_llm(), specs),
+            "engine": engine_status(),
         }
     )
 
@@ -936,6 +1148,29 @@ def api_set_model():
         return jsonify({"error": str(e)}), 422
     log(f"System: model switched to {info['llm']}")
     return jsonify(info)
+
+
+@app.post("/api/engine")
+def api_set_engine():
+    # Engine + cloud model selection. The key travels here on save but is
+    # never echoed back — GET /api/config only reports key_set.
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
+        return jsonify({"error": "engine must be a JSON object"}), 400
+    try:
+        if "engine" in data:
+            set_engine(data.get("engine"))
+        if "openrouter_model" in data:
+            set_openrouter_model(data.get("openrouter_model"))
+        if "openrouter_key" in data:
+            key = data.get("openrouter_key")
+            if not isinstance(key, str):
+                return jsonify({"error": "openrouter_key must be a string"}), 400
+            save_config({"openrouter_key": key.strip()})
+            log("System: OpenRouter key saved" if key.strip() else "System: OpenRouter key cleared")
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 422
+    return jsonify(engine_status())
 
 
 @app.get("/api/logs")

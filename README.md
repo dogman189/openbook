@@ -58,7 +58,7 @@ node scripts/check-main.mjs  # loads main.js under a stubbed Electron and drives
 - **Sources:** Upload PDFs (limit 100MB / 1000 pages) or paste text. Scanned PDFs get per-page OCR via EasyOCR (embedded text kept, image-only pages rastered at 200 DPI) — install it with `pip install -r requirements.txt`, see `docs/troubleshooting.md#ocr-setup-scanned-pdfs`.
 - **Ask:** Only answers from your Sources (top-6 chunks). Unknown → the model replies exactly `Not in your sources.`
 - **Summary:** Queries top-12 chunks, maps the first 8 into bullets, reduces to SUMMARY + KEY TERMS + OUTLINE. Takes ~20s+ offline on first run (model download).
-- **Models:** Studio model picker lists 4 Qwen presets with per-card fit (`fits` + `reason`) from `/api/models`, a recommended pick for your GPU, and `OPENBOOK_LLM_ID` override.
+- **Models:** Studio model picker lists 4 Qwen presets with per-card fit (`fits` + `reason`) from `/api/models`, a recommended pick for your GPU, and `OPENBOOK_LLM_ID` override. The Studio Engine section switches to OpenRouter cloud models (opt-in; key stays on this laptop, notebook content leaves it) — see `docs/api-reference.md` (`POST /api/engine`).
 
 ## API Reference
 See `docs/api-reference.md` for the full contract. Core (all under `http://127.0.0.1:5678`):

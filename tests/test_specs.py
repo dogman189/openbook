@@ -42,10 +42,7 @@ def test_get_specs_shape_without_torch(monkeypatch):
 
 def test_model_info_stub_needs_no_torch():
     info = model_info()
-    assert info == {
-        "llm": info["llm"],
-        "embed": "sentence-transformers/all-MiniLM-L6-v2",
-        "device": "cpu",
-        "engine": "transformers",
-    }
+    assert info["embed"] == "sentence-transformers/all-MiniLM-L6-v2"
+    assert info["device"] == "cpu"
+    assert info["engine"] == "transformers"
     assert info["llm"]

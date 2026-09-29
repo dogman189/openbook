@@ -16,6 +16,15 @@ If the card says it doesn't fit (e.g. `Needs ~4GB but GPU has ...`), pick a smal
 **Symptom:** `/api/health` shows `"device": "cpu"` on a machine with an NVIDIA GPU, or inference crawls.
 **Fix:** `requirements.txt` pins the CUDA 12.6 wheel (`--extra-index-url https://download.pytorch.org/whl/cu126`, `torch==2.14.0+cu126`, ~4.2GB). Reinstall it with an NVIDIA driver + CUDA-capable GPU and `device` flips to `cuda`. No NVIDIA GPU? Edit `requirements.txt` first and replace `torch==2.14.0+cu126` with `torch==2.14.0` for the ~200MB CPU-only wheel (slower, but works anywhere), then re-run `install-deps.bat` / `pip install -r requirements.txt`.
 
+## OpenRouter cloud asks fail
+**Symptom:** Ask returns `Error: OpenRouter: …` in chat.
+**Fix by message:**
+- `invalid API key` → re-paste the key in Studio → Engine (keys start `sk-or-`). Env override: `OPENROUTER_API_KEY`.
+- `out of credits` → top up at openrouter.ai. Check spend per request in the response `usage.cost` via `GET /api/v1/generation` if needed.
+- `rate limited` → wait and retry; pick a smaller model.
+- `key missing` → no key saved and no env var set. Cloud is opt-in; Local keeps working with no key at all.
+**Privacy:** cloud mode sends the retrieved notebook chunks to OpenRouter. The key itself never leaves `config.json` on this laptop (`GET /api/config` only reports `openrouter_key_set`).
+
 ## Backend won't start / port 5678 busy
 **Symptom:** `curl http://127.0.0.1:5678/api/config` fails, or Electron shows the missing-dependencies box.
 **Fix:** Backend binds fixed `127.0.0.1:5678` — there is no port flag. If busy, find and kill the stale Python:
