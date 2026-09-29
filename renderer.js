@@ -1173,6 +1173,7 @@ window.OB = window.OB || {};
         .then(function () {
           keyInput = "";
           showKey = false;
+          busy = false;
           savedNote = note || "Saved.";
           return load();
         })
@@ -1254,6 +1255,16 @@ window.OB = window.OB || {};
           ],
         });
         if (showKey) {
+          var saveBtn = el("button", {
+            class: "btn btn-primary btn-sm",
+            text: busy ? "Saving…" : "Save key",
+            attrs: busy || !keyInput.trim() ? { disabled: true } : {},
+            on: {
+              click: function () {
+                if (keyInput.trim()) save({ openrouter_key: keyInput.trim() }, "Key saved.");
+              },
+            },
+          });
           var input = el("input", {
             class: "input",
             attrs: {
@@ -1264,7 +1275,10 @@ window.OB = window.OB || {};
             },
             on: {
               input: function (e) {
+                // No repaint here (it would drop focus): flip the button directly.
                 keyInput = e.target.value;
+                if (keyInput.trim()) saveBtn.removeAttribute("disabled");
+                else saveBtn.setAttribute("disabled", "");
               },
               keydown: function (e) {
                 if (e.key === "Enter" && keyInput.trim()) {
@@ -1279,16 +1293,7 @@ window.OB = window.OB || {};
             el("div", {
               class: "model-custom-actions",
               children: [
-                el("button", {
-                  class: "btn btn-primary btn-sm",
-                  text: busy ? "Saving…" : "Save key",
-                  attrs: busy || !keyInput.trim() ? { disabled: true } : {},
-                  on: {
-                    click: function () {
-                      if (keyInput.trim()) save({ openrouter_key: keyInput.trim() }, "Key saved.");
-                    },
-                  },
-                }),
+                saveBtn,
                 el("button", {
                   class: "btn btn-ghost btn-sm",
                   text: "Cancel",
