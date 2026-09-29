@@ -7,6 +7,7 @@
     "start": "electron .",
     "check": "node scripts/check.mjs && node scripts/check-main.mjs",
     "pack": "electron-builder --win --x64 --dir",
+    "dist": "electron-builder --win --x64",
     "build": "electron-builder"
   },
   "devDependencies": {
@@ -29,12 +30,16 @@
       "package.json"
     ],
     "win": {
-      "target": {
-        "target": "dir",
-        "arch": [
-          "x64"
-        ]
-      }
+      "target": [
+        {
+          "target": "dir",
+          "arch": ["x64"]
+        },
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
     }
   }
 }

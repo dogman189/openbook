@@ -1,4 +1,5 @@
 node_modules/
+.opencode/
 .opencode/node_modules/
 .opencode/package-lock.json
 .tmp/
