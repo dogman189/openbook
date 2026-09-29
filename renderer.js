@@ -374,7 +374,7 @@ window.OB = window.OB || {};
         if (e.key === "Enter") create();
       });
       return el("div", {
-        children: [input, el("div", { class: "row-mt", children: [btn] })],
+        children: [input, el("div", { class: "row-mt stack", children: [btn] })],
       });
     }
 
@@ -1087,7 +1087,7 @@ window.OB = window.OB || {};
         }
         kids.push(
           el("div", {
-            class: "row-mt",
+            class: "row-mt stack",
             children: [
               el("button", {
                 class: "btn",
