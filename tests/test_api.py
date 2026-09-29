@@ -178,7 +178,11 @@ def test_lifecycle_events_logged(client, nid, monkeypatch):
 
 
 def test_chat_and_summary_log(client, nid, monkeypatch):
-    monkeypatch.setattr(backend, "ask_stream", lambda nid_, q_: iter(["tok"]))
+    monkeypatch.setattr(
+        backend, "query", lambda nid_, q_, k=6: [{"text": "t", "pages": "1", "source": "s"}]
+    )
+    monkeypatch.setattr(backend, "indexed_count", lambda nid_: 7)
+    monkeypatch.setattr(backend, "llm_stream", lambda prompt: iter(["tok"]))
     r = client.post(f"/api/notebooks/{nid}/chat", json={"query": "what is x?"})
     assert r.status_code == 200
     assert b"[DONE]" in r.data

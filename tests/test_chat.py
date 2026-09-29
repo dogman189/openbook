@@ -36,6 +36,31 @@ def test_ask_stream_uses_k6(monkeypatch):
     assert seen["k"] == 6
 
 
+def test_ask_stream_empty_hits_refuses_without_model(monkeypatch):
+    calls = []
+
+    monkeypatch.setattr(backend, "query", lambda nid, q, k=6: [])
+    monkeypatch.setattr(backend, "indexed_count", lambda nid: 0)
+    monkeypatch.setattr(
+        backend, "llm_stream", lambda prompt: (_ for _ in ()).throw(AssertionError("model must not run"))
+    )
+    assert list(backend.ask_stream("n1", "hello")) == ["Not in your sources."]
+
+
+def test_ask_stream_logs_hits_and_indexed(monkeypatch):
+    import queue as _queue
+
+    q = _queue.Queue()
+    monkeypatch.setattr(backend, "_log_queue", q)
+    monkeypatch.setattr(
+        backend, "query", lambda nid, q_, k=6: [{"text": "t", "pages": "1", "source": "s"}]
+    )
+    monkeypatch.setattr(backend, "indexed_count", lambda nid: 42)
+    monkeypatch.setattr(backend, "llm_stream", lambda prompt: iter(["tok"]))
+    assert list(backend.ask_stream("n1", "hello world")) == ["tok"]
+    assert q.get_nowait()["message"] == 'System: ask "hello world" (1 hits / 42 indexed)'
+
+
 def test_chat_sse_done_and_saved(client, monkeypatch):
     db = backend.get_db()
     nid = backend.create_notebook(db, "nb")

@@ -622,17 +622,38 @@ def query(notebook_id, q, k=6):
 
 
 # --------------------------------------------------------------- CHAT ----
-SYSTEM = """Answer ONLY from context. Cite every fact as [sourceName p.N].
-If not in context, reply exactly: Not in your sources."""
+# Small local models grab the refusal as the path of least resistance, so
+# the prompt leads with the notes and ends on the answer cue — the refusal
+# stays only as a last resort. Empty retrieval never reaches the model at
+# all (see ask_stream): the prompt below always carries real context.
+SYSTEM = "Use ONLY the lecture notes below to answer. Cite every fact like [lec1.pdf p.3]."
 
 
 def build_prompt(q, hits):
     ctx = "\n\n".join(f"[{h['source']} p.{h['pages']}] {h['text'][:1500]}" for h in hits)
-    return f"{SYSTEM}\n\nContext:\n{ctx}\n\nQuestion: {q}"
+    return (
+        f"{SYSTEM}\n\nNotes:\n{ctx}\n\n"
+        f"Question: {q}\n"
+        "If the notes do not contain the answer, reply exactly: Not in your sources.\n"
+        "Answer (with citations):"
+    )
+
+
+def indexed_count(notebook_id):
+    # Observability only: how many chunks this notebook has indexed. Never
+    # allowed to break a chat turn, so failures report -1 instead of raising.
+    try:
+        return _col(notebook_id).count()
+    except Exception:
+        return -1
 
 
 def ask_stream(notebook_id, q):
     hits = query(notebook_id, q, k=6)
+    log(f'System: ask "{q.strip()[:60]}" ({len(hits)} hits / {indexed_count(notebook_id)} indexed)')
+    if not hits:
+        yield "Not in your sources."
+        return
     yield from llm_stream(build_prompt(q, hits))
 
 
@@ -855,7 +876,6 @@ def api_chat(nid):
         return jsonify({"error": "query required"}), 422
     db = get_db()
     save_message(db, nid, "user", q)
-    log(f'System: ask "{q.strip()[:60]}"')
     full = []
 
     def gen():
