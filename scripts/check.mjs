@@ -43,6 +43,7 @@ if (!rend.includes("window.SETUP")) throw new Error("renderer missing window.SET
 if (!rend.includes("renderSetup")) throw new Error("renderer missing renderSetup");
 if (!rend.includes("renderEngine")) throw new Error("renderer missing renderEngine");
 if (!rend.includes("/api/engine")) throw new Error("renderer missing /api/engine");
+if (!rend.includes("Custom…")) throw new Error("renderer missing custom OpenRouter model option");
 if (!rend.includes("__test_hook")) throw new Error("renderer missing OB.__test_hook");
 if (rend.includes("localhost:8000")) throw new Error("renderer still points at localhost:8000");
 if (/price-chart|getCurrency|currency\.js|nav\.js/.test(html + rend))

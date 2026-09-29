@@ -6,6 +6,7 @@ node_modules/
 data/
 models/
 *.db
+config.json
 release/
 dist/
 venv/

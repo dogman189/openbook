@@ -1142,6 +1142,8 @@ window.OB = window.OB || {};
     var keySet = false;
     var keyInput = "";
     var showKey = false;
+    var customModel = "";
+    var showCustomModel = false;
     var busy = false;
     var errorMsg = null;
     var savedNote = "";
@@ -1173,6 +1175,8 @@ window.OB = window.OB || {};
         .then(function () {
           keyInput = "";
           showKey = false;
+          customModel = "";
+          showCustomModel = false;
           busy = false;
           savedNote = note || "Saved.";
           return load();
@@ -1228,7 +1232,10 @@ window.OB = window.OB || {};
           attrs: { "aria-label": "OpenRouter model" },
           on: {
             change: function (e) {
-              save({ openrouter_model: e.target.value }, "Model saved.");
+              if (e.target.value === "custom") {
+                showCustomModel = true;
+                paint();
+              } else save({ openrouter_model: e.target.value }, "Model saved.");
             },
           },
         });
@@ -1242,8 +1249,69 @@ window.OB = window.OB || {};
         if (!listed && model) {
           sel.appendChild(el("option", { text: model + " (custom)", attrs: { value: model } }));
         }
-        sel.value = model;
+        sel.appendChild(el("option", { text: "Custom…", attrs: { value: "custom" } }));
+        sel.value = showCustomModel ? "custom" : model;
         kids.push(sel);
+
+        if (showCustomModel) {
+          var setBtn = el("button", {
+            class: "btn btn-primary btn-sm",
+            text: busy ? "Saving…" : "Set model",
+            attrs: busy || !customModel.trim() ? { disabled: true } : {},
+            on: {
+              click: function () {
+                if (customModel.trim()) save({ openrouter_model: customModel.trim() }, "Model saved.");
+              },
+            },
+          });
+          var customInput = el("input", {
+            class: "input",
+            attrs: {
+              "aria-label": "Custom OpenRouter model id",
+              placeholder: "org/model-id, e.g. qwen/qwen-2.5-72b-instruct",
+              autocomplete: "off",
+            },
+            on: {
+              input: function (e) {
+                // No repaint here (it would drop focus): flip the button directly.
+                customModel = e.target.value;
+                if (customModel.trim()) setBtn.removeAttribute("disabled");
+                else setBtn.setAttribute("disabled", "");
+              },
+              keydown: function (e) {
+                if (e.key === "Enter" && customModel.trim()) {
+                  save({ openrouter_model: customModel.trim() }, "Model saved.");
+                }
+              },
+            },
+          });
+          customInput.value = customModel;
+          kids.push(
+            el("div", {
+              class: "model-custom",
+              children: [
+                customInput,
+                el("div", {
+                  class: "model-custom-actions",
+                  children: [
+                    setBtn,
+                    el("button", {
+                      class: "btn btn-ghost btn-sm",
+                      text: "Cancel",
+                      on: {
+                        click: function () {
+                          showCustomModel = false;
+                          customModel = "";
+                          paint();
+                        },
+                      },
+                    }),
+                  ],
+                }),
+              ],
+            })
+          );
+        }
 
         var keyRow = el("div", {
           class: "model-custom",
