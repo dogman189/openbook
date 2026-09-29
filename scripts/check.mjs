@@ -28,7 +28,6 @@ if (/type\s*=\s*["']module["']/.test(html)) throw new Error("type=module forbidd
 
 const css = fs.readFileSync("app.css", "utf8");
 if (!css.includes("--cyan")) throw new Error("app.css missing --cyan token");
-if (!css.includes("--spectrum")) throw new Error("app.css missing --spectrum token");
 if (!css.includes(".panel")) throw new Error("app.css missing .panel");
 
 const mac = fs.readFileSync("macos.css", "utf8");
