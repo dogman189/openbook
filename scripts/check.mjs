@@ -8,6 +8,8 @@ for (const ch of ["openbook:deps-status", "openbook:install-deps", "openbook:sta
   if (!main.includes(ch)) throw new Error(`setup channel ${ch} missing in main.js`);
 }
 if (!main.includes("setupMode")) throw new Error("main missing setupMode gate");
+if (!main.includes("bundledUv")) throw new Error("main missing bundledUv resolver");
+if (!main.includes("'pip', 'install', '--python'")) throw new Error("in-app installer missing uv pip branch");
 if (!main.includes("/api/config")) throw new Error("readiness probe missing");
 if (!main.includes("process.resourcesPath")) throw new Error("packaged exe lookup missing");
 

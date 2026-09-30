@@ -32,7 +32,7 @@ If the card says it doesn't fit (e.g. `Needs ~4GB but GPU has ...`), pick a smal
 netstat -ano | findstr 5678
 taskkill /PID <pid> /F
 ```
-If modules are missing (`Could not find Python` / `dependencies missing` dialog): create the venv the finder probes (`venv/` or `.venv/` — either works) and install:
+If modules are missing (`Could not find Python` / `dependencies missing` dialog): the setup screen's Install button fetches Python 3.11 itself via the bundled `bin/uv.exe` — no python.org visit needed. Manual fallback (system Python 3.11+ only): create the venv the finder probes (`venv/` or `.venv/` — either works) and install:
 ```bash
 python -m venv .venv
 .venv\Scripts\activate

@@ -7,6 +7,7 @@
 // the app-ready path, then invokes each IPC handler for real.
 import { createRequire } from "module";
 import assert from "assert";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 
@@ -95,20 +96,33 @@ const status = await handlers.get("openbook:deps-status")();
 assert.ok(status && typeof status === "object", "deps-status must return an object");
 assert.ok("ok" in status && "setupReason" in status, "deps-status must report ok + setupReason");
 
-// Install path: exercise progressSender + spawnStep for real. The stubbed
-// spawn reports success, so the installer proceeds to the venv step and then
-// reports that no venv exists — a fast, deterministic end state.
+// Install path: exercise progressSender + spawnStep for real. child_process
+// spawn is stubbed to exit 0 instantly, so whatever branch the environment
+// selects (uv pip when bin/uv is staged, else the venv/error path) resolves
+// fast and deterministically.
 const lines = [];
 const fakeEvent = { sender: { send: (_ch, line) => lines.push(String(line)) } };
 const result = await handlers.get("openbook:install-deps")(fakeEvent);
 assert.ok(result && typeof result.code === "number", "install-deps must resolve with a numeric code");
 assert.ok(lines.length > 0, "install-deps must stream progress lines");
-// A ReferenceError inside the handler rejects the promise; reaching here
-// means the whole chain ran.
-assert.ok(
-  lines.some((l) => l.includes("virtual environment") || l.includes("ERROR") || l.includes("$")),
-  `expected real installer output, got: ${JSON.stringify(lines.slice(0, 4))}`
+const uvStaged = fs.existsSync(
+  path.join(root, "bin", process.platform === "win32" ? "uv.exe" : "uv")
 );
+if (uvStaged) {
+  // Repo .venv exists and uv is staged, so the uv pip branch must run clean.
+  assert.strictEqual(result.code, 0, "uv install path must succeed under stubbed spawn");
+  assert.ok(
+    lines.some((l) => l.includes("pip install --python")),
+    `expected a uv pip line, got: ${JSON.stringify(lines.slice(0, 4))}`
+  );
+} else {
+  // A ReferenceError inside the handler rejects the promise; reaching here
+  // means the whole chain ran.
+  assert.ok(
+    lines.some((l) => l.includes("virtual environment") || l.includes("ERROR") || l.includes("$")),
+    `expected real installer output, got: ${JSON.stringify(lines.slice(0, 4))}`
+  );
+}
 
 childProc.spawn = realSpawn;
 console.log(`check-main: PASS — ${handlers.size} IPC channels, install streamed ${lines.length} line(s)`);

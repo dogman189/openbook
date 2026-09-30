@@ -150,14 +150,24 @@ function backendBinaryExists() {
 // run backend.py, and whether its imports already resolve.
 function getSetupState() {
   const exe = findScriptPython();
-  if (!exe) return { python: null, ok: false, missing: [], setupReason: 'deps' };
+  const uv = bundledUv();
+  if (!exe) return { python: null, ok: false, missing: [], setupReason: 'deps', uv: !!uv };
   const check = preflight(exe);
   return {
     python: exe,
     ok: check.ok,
     missing: check.missing,
     setupReason: check.ok ? null : 'deps',
+    uv: !!uv,
   };
+}
+
+// uv ships in bin/ (staged by scripts/fetch-uv.mjs) and fetches its own
+// Python, so a machine with no system Python can still self-install.
+function bundledUv() {
+  const name = process.platform === 'win32' ? 'uv.exe' : 'uv';
+  const p = path.join(__dirname, 'bin', name);
+  return fs.existsSync(p) ? p : null;
 }
 
 function startPythonBackend() {
@@ -184,6 +194,13 @@ function startPythonBackend() {
     // Dev + portable Phase-1: run backend.py with a script-capable Python.
     exe = findScriptPython();
     if (!exe) {
+      if (bundledUv()) {
+        // No system Python, but uv can fetch one: setup screen instead of
+        // the fatal quit — the installer bootstraps everything itself.
+        setupMode = 'deps';
+        console.log('[Electron] No system Python — uv will fetch it; entering setup mode.');
+        return;
+      }
       dialog.showErrorBox(
         'Python Not Found',
         'Could not find Python on this system.\n\nPlease install Python from python.org and check "Add Python to PATH" during installation.'
@@ -446,27 +463,57 @@ function runInstaller(event) {
       emit('ERROR: requirements.txt not found next to the app.');
       return { code: 1 };
     }
-    let py = fs.existsSync(venvPy) ? venvPy : findSystemPython();
-    if (!py) {
-      emit('ERROR: no system Python found — install Python 3.11+ first.');
-      return { code: 1 };
+    let py = fs.existsSync(venvPy) ? venvPy : null;
+    const uv = bundledUv();
+    let useUv = !!uv;
+    if (!py && useUv) {
+      // No venv yet and uv is bundled: fetch a private Python and create
+      // the venv with it. No system Python, PATH edits, or python.org visit.
+      emit('Fetching Python 3.11 (no system Python needed) ...');
+      if ((await spawnStep(uv, ['python', 'install', '3.11'], base, emit)) !== 0) {
+        emit('WARNING: uv could not fetch Python — falling back to system Python.');
+        useUv = false;
+      } else {
+        emit('Creating virtual environment in .venv ...');
+        const vc = await spawnStep(uv, ['venv', '.venv', '--python', '3.11'], base, emit);
+        if (vc !== 0 || !fs.existsSync(venvPy)) {
+          emit('WARNING: uv venv failed — falling back to system Python.');
+          useUv = false;
+        } else {
+          py = venvPy;
+        }
+      }
     }
-    if (!fs.existsSync(venvPy)) {
-      emit('Creating virtual environment in .venv ...');
-      const code = await spawnStep(py, ['-m', 'venv', '.venv'], base, emit);
-      if (code !== 0 || !fs.existsSync(venvPy)) {
-        emit('ERROR: could not create the virtual environment.');
+    if (!py) {
+      py = findSystemPython();
+      if (!py) {
+        emit('ERROR: no Python available — install Python 3.11+ first.');
         return { code: 1 };
       }
-      py = venvPy;
+      if (!fs.existsSync(venvPy)) {
+        emit('Creating virtual environment in .venv ...');
+        const code = await spawnStep(py, ['-m', 'venv', '.venv'], base, emit);
+        if (code !== 0 || !fs.existsSync(venvPy)) {
+          emit('ERROR: could not create the virtual environment.');
+          return { code: 1 };
+        }
+        py = venvPy;
+      }
     }
-    emit('Upgrading pip ...');
-    await spawnStep(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], base, emit);
-    emit('Installing OpenBook libraries (torch is a ~4GB download) ...');
-    const code = await spawnStep(py, ['-m', 'pip', 'install', '-r', requirements], base, emit);
+    let code;
+    if (useUv) {
+      // uv pip targets the venv interpreter directly — no activation needed.
+      emit('Installing OpenBook libraries via uv (torch is a ~4GB download) ...');
+      code = await spawnStep(uv, ['pip', 'install', '--python', venvPy, '-r', requirements], base, emit);
+    } else {
+      emit('Upgrading pip ...');
+      await spawnStep(py, ['-m', 'pip', 'install', '--upgrade', 'pip'], base, emit);
+      emit('Installing OpenBook libraries (torch is a ~4GB download) ...');
+      code = await spawnStep(py, ['-m', 'pip', 'install', '-r', requirements], base, emit);
+    }
     if (code !== 0) {
       emit('ERROR: installation failed — see output above.');
-      return { code, ocrAvailable: false };
+      return { code };
     }
     emit('Done. Starting the study engine ...');
     return { code: 0 };
@@ -545,6 +592,7 @@ module.exports = {
   findScriptPython,
   findSystemPython,
   backendBinaryExists,
+  bundledUv,
   getSetupState,
   waitForBackend,
   getDataRoot,

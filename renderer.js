@@ -1745,12 +1745,16 @@ window.OB = window.OB || {};
     var missing = document.getElementById("setup-missing");
     var btn = document.getElementById("setup-install");
     var logpre = document.getElementById("setup-log");
-    if (!st || !st.python) {
+    if (!st || (!st.python && !st.uv)) {
       if (desc)
         desc.textContent =
           "Python 3.11+ was not found. Install it from python.org (tick 'Add Python to PATH'), restart OpenBook, then install dependencies here.";
       if (btn) btn.style.display = "none";
       return;
+    }
+    if (!st.python && st.uv && desc) {
+      desc.textContent =
+        "No Python on this machine yet — Install fetches it automatically, then installs everything else.";
     }
     if (missing) missing.textContent = "Missing: " + (st.missing || []).join(", ");
     if (window.SETUP && window.SETUP.onProgress) {

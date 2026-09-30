@@ -6,6 +6,7 @@ node_modules/
 .superpowers/sdd/
 data/
 models/
+bin/
 *.db
 config.json
 release/
