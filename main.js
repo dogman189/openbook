@@ -79,19 +79,31 @@ function findBackendExecutable() {
 // produces an actionable message instead of a dead window.
 function preflight(pythonExe) {
   const probe = REQUIRED_MODULES.map((m) => `import ${m}`).join('; ');
-  const result = spawnSync(pythonExe, ['-c', probe], {
-    cwd: __dirname,
-    encoding: 'utf8',
-  });
+  let result;
+  try {
+    result = spawnSync(pythonExe, ['-c', probe], {
+      cwd: __dirname,
+      encoding: 'utf8',
+    });
+  } catch (e) {
+    // The interpreter itself could not be launched (deleted venv, AV
+    // quarantine, broken exe) — distinct from a missing module.
+    return { ok: false, missing: ['(unlaunchable)'], err: String((e && e.message) || e) };
+  }
   if (result.status === 0) return { ok: true, missing: [] };
-  const stderr = result.stderr || '';
+  const stderr = result.stderr || result.error || '';
   const missing = [...new Set(
-    stderr
+    String(stderr)
       .split('\n')
       .filter((line) => line.includes('ModuleNotFoundError'))
       .map((line) => line.split(':').pop().trim().replace(/['"]/g, ''))
   )];
-  return { ok: false, missing: missing.length > 0 ? missing : ['(unknown)'] };
+  const tail = String(stderr)
+    .trim()
+    .split('\n')
+    .slice(-3)
+    .join(' | ');
+  return { ok: false, missing: missing.length > 0 ? missing : ['(unknown)'], err: tail };
 }
 
 // --- SETUP-MODE PYTHON (dev + portable Phase-1: run backend.py directly) ---
@@ -515,6 +527,16 @@ function runInstaller(event) {
       emit('ERROR: installation failed — see output above.');
       return { code };
     }
+    // Verify before claiming success: pip reporting "satisfied" while the
+    // interpreter still fails its imports is exactly the state that used
+    // to surface later as a bare "dependencies still missing".
+    emit('Verifying imports ...');
+    const verify = preflight(venvPy);
+    if (!verify.ok) {
+      emit(`WARNING: install finished but these still fail to import: ${verify.missing.join(', ')}`);
+      if (verify.err) emit(verify.err);
+      return { code: 1 };
+    }
     emit('Done. Starting the study engine ...');
     return { code: 0 };
   })().finally(() => {
@@ -530,7 +552,23 @@ function registerSetupIpc() {
     // pip run cannot slip through into a dead backend.
     setupMode = false;
     startPythonBackend();
-    if (setupMode) return { ok: false, error: 'dependencies still missing' };
+    if (setupMode) {
+      // Name the missing modules: without this the setup log proves pip
+      // succeeded while the engine still refuses to start, and nobody can
+      // tell which import is actually failing.
+      let detail = '';
+      const exe = findScriptPython();
+      if (exe) {
+        const recheck = preflight(exe);
+        if (!recheck.ok && recheck.missing.length) {
+          detail = `: ${recheck.missing.join(', ')}`;
+          if (recheck.err && (recheck.missing[0] === '(unknown)' || recheck.missing[0] === '(unlaunchable)')) {
+            detail += ` — ${recheck.err}`;
+          }
+        }
+      }
+      return { ok: false, error: `dependencies still missing${detail}` };
+    }
     if (!pythonProcess) return { ok: false, error: 'backend process failed to spawn' };
     try {
       await waitForBackend();

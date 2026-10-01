@@ -109,12 +109,29 @@ const uvStaged = fs.existsSync(
   path.join(root, "bin", process.platform === "win32" ? "uv.exe" : "uv")
 );
 if (uvStaged) {
-  // Repo .venv exists and uv is staged, so the uv pip branch must run clean.
-  assert.strictEqual(result.code, 0, "uv install path must succeed under stubbed spawn");
+  // Repo .venv exists and uv is staged, so the uv pip branch must run.
+  // The post-pip verification runs against the REAL repo venv, which may
+  // genuinely lack modules here — either outcome proves the chain, but a
+  // success must never print the verification warning and a failure must.
   assert.ok(
     lines.some((l) => l.includes("pip install --python")),
     `expected a uv pip line, got: ${JSON.stringify(lines.slice(0, 4))}`
   );
+  assert.ok(
+    lines.some((l) => l.includes("Verifying imports")),
+    "installer must run post-pip import verification"
+  );
+  if (result.code === 0) {
+    assert.ok(
+      !lines.some((l) => l.includes("still fail to import")),
+      "successful install must not print the verification warning"
+    );
+  } else {
+    assert.ok(
+      lines.some((l) => l.includes("still fail to import")),
+      `failed install must name the failing imports, got: ${JSON.stringify(lines.slice(-4))}`
+    );
+  }
 } else {
   // A ReferenceError inside the handler rejects the promise; reaching here
   // means the whole chain ran.
