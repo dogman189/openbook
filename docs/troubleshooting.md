@@ -67,7 +67,7 @@ OCR is [EasyOCR](https://github.com/JaidedAI/EasyOCR), a pure-Python dependency 
 Messages live in `openbook.db` (`messages` table) + `GET /api/notebooks/<id>/messages`. If empty after restart, the DB path is wrong — it must be `openbook.db` next to `backend.py` (or under `$OPENBOOK_HOME` in portable builds), not in `data/`. `data/` + `*.db` + `models/` are gitignored by design.
 
 ## Windows venv paths
-`main.js` probes `./venv/Scripts/python.exe` then `./.venv/Scripts/python.exe` (elsewhere `bin/python`), falling back to system `python`/`python3`/`py`. `install-deps.bat` creates `.venv`; `install.ps1` creates `venv` — both are found. If Electron says dependencies are missing, activate whichever exists and `pip install -r requirements.txt` (note: PowerShell activation is `.venv\Scripts\Activate.ps1`).
+`main.js` probes `<venvBase>/.venv` then `<venvBase>/venv` (`Scripts/python.exe` on Windows, `bin/python` elsewhere), falling back to system `python`/`python3`/`py`. `<venvBase>` is the repo root in dev but `%APPDATA%/OpenBook` when packaged — the portable exe extracts to a fresh Temp dir per launch, so an exe-side venv would evaporate (and native DLL loads from Temp trip AV rules). `install-deps.bat` creates a folder-local `.venv` instead; both locations are found. If Electron says dependencies are missing, activate whichever exists and `pip install -r requirements.txt` (note: PowerShell activation is `.venv\Scripts\Activate.ps1`).
 
 ## Ports quick check
 ```bash

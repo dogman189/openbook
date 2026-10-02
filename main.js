@@ -169,13 +169,28 @@ function findSystemPython() {
   return null;
 }
 
+// Venv home: persistent and outside Temp. The portable exe extracts to a
+// random Temp dir per launch, so a venv next to the exe evaporates every
+// run (forcing a full torch re-download each launch) and native DLL loads
+// from Temp trip over-eager AV/ASR rules (observed: torch c10.dll failing
+// with WinError 126). Roaming AppData is user-writable, stable across
+// launches, and never Temp. Dev keeps the repo-local venv.
+function venvBase() {
+  if (!app.isPackaged) return __dirname;
+  const root = path.join(app.getPath('appData'), 'OpenBook');
+  try {
+    fs.mkdirSync(root, { recursive: true });
+  } catch (_) {}
+  return root;
+}
+
 function findScriptPython() {
   const isWin = process.platform === 'win32';
-  const venvBase = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const base = venvBase();
   for (const venvDir of ['.venv', 'venv']) {
     const p = isWin
-      ? path.join(venvBase, venvDir, 'Scripts', 'python.exe')
-      : path.join(venvBase, venvDir, 'bin', 'python');
+      ? path.join(base, venvDir, 'Scripts', 'python.exe')
+      : path.join(base, venvDir, 'bin', 'python');
     if (fs.existsSync(p)) return p;
   }
   return findSystemPython();
@@ -463,8 +478,10 @@ function createApplicationMenu() {
 
 // --- IN-APP DEPENDENCY INSTALLER (setup mode) ---
 // Mirrors install-deps.bat so the portable dist can self-repair: creates
-// .venv next to the app (exe dir when packaged) and pip-installs
-// requirements.txt, streaming pip output to the setup screen.
+// .venv under venvBase() (Roaming AppData when packaged — the portable exe
+// extracts to a fresh Temp dir per launch, so an exe-side venv would
+// evaporate and native DLL loads would run from Temp) and pip-installs
+// requirements.txt, streaming output to the setup screen.
 function progressSender(event) {
   return (line) => {
     try {
@@ -491,7 +508,7 @@ function runInstaller(event) {
   if (installerRunning) return Promise.resolve({ code: 2, error: 'install already running' });
   installerRunning = true;
   const emit = progressSender(event);
-  const base = app.isPackaged ? path.dirname(app.getPath('exe')) : __dirname;
+  const base = venvBase();
   const isWin = process.platform === 'win32';
   const venvPath = path.join(base, '.venv');
   const venvPy = isWin
@@ -516,7 +533,9 @@ function runInstaller(event) {
         useUv = false;
       } else {
         emit('Creating virtual environment in .venv ...');
-        const vc = await spawnStep(uv, ['venv', '.venv', '--python', '3.11'], base, emit);
+        // --seed: uv venvs omit pip by default, and the venv's own pip is
+        // used later (plus manual activation), so seed it explicitly.
+        const vc = await spawnStep(uv, ['venv', venvPath, '--python', '3.11', '--seed'], base, emit);
         if (vc !== 0 || !fs.existsSync(venvPy)) {
           emit('WARNING: uv venv failed — falling back to system Python.');
           useUv = false;

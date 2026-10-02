@@ -50,7 +50,7 @@ Expected: streamed answer with `[lec1.pdf p.3]`-style cites, summary + key terms
 ```bash
 npm run pack
 ```
-Output: `release/win-unpacked/`. Copy the whole folder anywhere, then `OpenBook.exe`. On first launch the setup screen installs everything itself (uv fetches Python 3.11, creates `.venv`, installs libraries) — or run `install-deps.bat` beforehand. Everything the app creates (`openbook.db`, `config.json`, `data/`, `models/`) stays inside that folder via `OPENBOOK_HOME`. See `SETUP.txt`.
+Output: `release/win-unpacked/`. Copy the whole folder anywhere, then `OpenBook.exe`. On first launch the setup screen installs everything itself (uv fetches Python 3.11, creates `.venv` under `%APPDATA%/OpenBook` so it survives relaunch, installs libraries) — or run `install-deps.bat` beforehand for a folder-local `.venv`. Everything the app creates (`openbook.db`, `config.json`, `data/`, `models/`) stays inside that folder via `OPENBOOK_HOME`. See `SETUP.txt`.
 
 WHY dir-pack + `.venv` fallback (not onefile): bundling `torch + transformers + chromadb` into a single `backend.exe` yields a 3–5GB binary with slow builds. V1 ships `electron-builder --win --x64 --dir` + `.venv` fallback; onefile (`backend.spec` + `build.ps1`/`build.sh`) is deferred to Phase 2 after size validation.
 
