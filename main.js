@@ -77,11 +77,29 @@ function findBackendExecutable() {
 
 // Verify backend imports resolve before spawn, so a missing dependency
 // produces an actionable message instead of a dead window.
+//
+// One interpreter launch classifies every module: OK, MISSING (never
+// installed), or CRASH (present but raises on import — e.g. chromadb
+// without onnxruntime, which dies with ValueError, not ImportError).
+// A plain `import a; import b; ...` probe cannot tell those apart, and the
+// difference decides the fix, so the classification lives here.
 function preflight(pythonExe) {
-  const probe = REQUIRED_MODULES.map((m) => `import ${m}`).join('; ');
+  const script =
+    "import traceback\n" +
+    "mods = " + JSON.stringify(REQUIRED_MODULES) + "\n" +
+    "for _m in mods:\n" +
+    "    try:\n" +
+    "        __import__(_m)\n" +
+    "        print('OK ' + _m)\n" +
+    "    except ModuleNotFoundError as _e:\n" +
+    "        _lines = str(_e).splitlines()\n" +
+    "        print('MISSING ' + _m + (' :: ' + _lines[0] if _lines else ''))\n" +
+    "    except Exception:\n" +
+    "        print('CRASH ' + _m)\n" +
+    "        traceback.print_exc(limit=3)\n";
   let result;
   try {
-    result = spawnSync(pythonExe, ['-c', probe], {
+    result = spawnSync(pythonExe, ['-c', script], {
       cwd: __dirname,
       encoding: 'utf8',
     });
@@ -90,20 +108,31 @@ function preflight(pythonExe) {
     // quarantine, broken exe) — distinct from a missing module.
     return { ok: false, missing: ['(unlaunchable)'], err: String((e && e.message) || e) };
   }
-  if (result.status === 0) return { ok: true, missing: [] };
-  const stderr = result.stderr || result.error || '';
-  const missing = [...new Set(
-    String(stderr)
-      .split('\n')
-      .filter((line) => line.includes('ModuleNotFoundError'))
-      .map((line) => line.split(':').pop().trim().replace(/['"]/g, ''))
-  )];
-  const tail = String(stderr)
+  const stdout = String(result.stdout || '');
+  const stderr = String(result.stderr || result.error || '');
+  const missing = [];
+  for (const line of stdout.split('\n')) {
+    const t = line.trim();
+    if (t.startsWith('MISSING ')) {
+      const name = t.slice('MISSING '.length).split(' ::')[0].trim();
+      if (name) missing.push(name);
+    } else if (t.startsWith('CRASH ')) {
+      const name = t.slice('CRASH '.length).trim();
+      if (name) missing.push(`${name} (crash)`);
+    }
+  }
+  const seen = REQUIRED_MODULES.filter(
+    (m) => stdout.split('\n').some((l) => l.trim() === `OK ${m}`)
+  );
+  const silent = REQUIRED_MODULES.filter((m) => !seen.includes(m) && !missing.some((x) => x === m || x.startsWith(`${m} `)));
+  for (const m of silent) missing.push(`${m} (no result)`);
+  if (missing.length === 0) return { ok: true, missing: [] };
+  const tail = stderr
     .trim()
     .split('\n')
-    .slice(-3)
+    .slice(-4)
     .join(' | ');
-  return { ok: false, missing: missing.length > 0 ? missing : ['(unknown)'], err: tail };
+  return { ok: false, missing: [...new Set(missing)], err: tail };
 }
 
 // --- SETUP-MODE PYTHON (dev + portable Phase-1: run backend.py directly) ---
@@ -531,7 +560,20 @@ function runInstaller(event) {
     // interpreter still fails its imports is exactly the state that used
     // to surface later as a bare "dependencies still missing".
     emit('Verifying imports ...');
-    const verify = preflight(venvPy);
+    let verify = preflight(venvPy);
+    const onnxSuspect =
+      !verify.ok &&
+      (verify.missing.some((m) => m.startsWith('chromadb')) ||
+        (verify.err || '').toLowerCase().includes('onnxruntime'));
+    if (onnxSuspect) {
+      // Known shape: chromadb raises ValueError (not ImportError) when its
+      // onnxruntime extra is absent, even though pip considered everything
+      // satisfied. Retry that one package through the venv's own pip — an
+      // unambiguous target, unlike uv's interpreter resolution.
+      emit('Chromadb import crashes without onnxruntime — installing it explicitly ...');
+      const rc = await spawnStep(venvPy, ['-m', 'pip', 'install', 'onnxruntime'], base, emit);
+      if (rc === 0) verify = preflight(venvPy);
+    }
     if (!verify.ok) {
       emit(`WARNING: install finished but these still fail to import: ${verify.missing.join(', ')}`);
       if (verify.err) emit(verify.err);
