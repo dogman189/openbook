@@ -607,6 +607,18 @@ function runInstaller(event) {
       }
     }
     if (!verify.ok) {
+      // torch names its own missing piece: without the VC++ Redistributable
+      // every native import dies at c10.dll. Offer it in-app (visible
+      // installer carries its own elevation prompt) instead of a link.
+      const needsVcRedist =
+        process.platform === 'win32' &&
+        /visual c\+\+ redistributable/i.test(`${verify.err || ''} ${(verify.missing || []).join(' ')}`);
+      if (needsVcRedist) {
+        emit('Missing Visual C++ Redistributable detected — downloading its installer (~24MB) ...');
+        if (await installVcRedist(base, emit)) verify = preflight(venvPy);
+      }
+    }
+    if (!verify.ok) {
       emit(`WARNING: install finished but these still fail to import: ${verify.missing.join(', ')}`);
       if (verify.err) emit(verify.err);
       emit('If native libraries (.dll) fail to load: allow the app folder in Windows Security real-time protection, '
@@ -618,6 +630,46 @@ function runInstaller(event) {
   })().finally(() => {
     installerRunning = false;
   });
+}
+
+// Visual C++ Redistributable: torch's c10.dll links it, and fresh Windows
+// boxes often lack it — torch then prints exactly what to do. Download the
+// official installer and run it visibly (it carries its own UAC elevation
+// prompt; a silent flag would just die without admin). Exit 0 = installed,
+// 1638 = a newer copy is already there, 3010 = reboot needed first.
+// Returns true when the redist is (now) plausibly present.
+const VCREDIST_URL = 'https://aka.ms/vs/17/release/vc_redist.x64.exe';
+
+function installVcRedist(base, emit) {
+  return (async () => {
+    const os = require('os');
+    const setupExe = path.join(os.tmpdir(), 'vc-redist-openbook.exe');
+    const dl = await spawnStep(
+      'powershell.exe',
+      ['-NoProfile', '-Command', `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -UseBasicParsing -UserAgent 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' -Uri '${VCREDIST_URL}' -OutFile '${setupExe}'`],
+      base,
+      emit
+    );
+    if (dl !== 0 || !fs.existsSync(setupExe)) {
+      emit('WARNING: VC++ Redistributable download failed — install it from https://aka.ms/vs/17/release/vc_redist.x64.exe and Retry.');
+      return false;
+    }
+    emit('Running the VC++ Redistributable installer (approve the prompt if Windows asks) ...');
+    const inst = await spawnStep(setupExe, [], base, emit);
+    try {
+      fs.unlinkSync(setupExe);
+    } catch (_) {}
+    if (inst === 3010) {
+      emit('NOTE: the redistributable asked for a reboot — restart Windows, then Retry install.');
+      return false;
+    }
+    if (inst !== 0 && inst !== 1638) {
+      emit('WARNING: redistributable installer exited oddly — install it from https://aka.ms/vs/17/release/vc_redist.x64.exe and Retry.');
+      return false;
+    }
+    emit('Redistributable installed — re-verifying imports ...');
+    return true;
+  })();
 }
 
 function registerSetupIpc() {
