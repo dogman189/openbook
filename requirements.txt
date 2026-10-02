@@ -5,6 +5,9 @@ pypdf==4.2.0
 pymupdf>=1.24.0
 easyocr>=1.7.0
 chromadb==0.5.5
+# chromadb imports its default ONNX embedding function at import time, so
+# `import chromadb` itself fails without this (ValueError, not ImportError).
+onnxruntime>=1.17.0
 torch==2.14.0+cu126
 transformers>=4.51.0
 accelerate==1.2.1
