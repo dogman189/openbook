@@ -594,8 +594,23 @@ function runInstaller(event) {
       if (rc === 0) verify = preflight(venvPy);
     }
     if (!verify.ok) {
+      const crashNames = verify.missing.filter((m) => m.endsWith('(crash)'));
+      if (crashNames.length > 0) {
+        // Native extensions are present but won't load (WinError 126 and
+        // friends). On a box that just wrote gigabytes of fresh DLLs, the
+        // usual cause is antivirus still holding them — not a broken
+        // install. Wait once for the scan to settle, then re-verify before
+        // declaring failure.
+        emit('Native libraries present but not loadable yet — waiting 60s for antivirus/file scan to settle ...');
+        await new Promise((r) => setTimeout(r, 60000));
+        verify = preflight(venvPy);
+      }
+    }
+    if (!verify.ok) {
       emit(`WARNING: install finished but these still fail to import: ${verify.missing.join(', ')}`);
       if (verify.err) emit(verify.err);
+      emit('If native libraries (.dll) fail to load: allow the app folder in Windows Security real-time protection, '
+        + 'install the VC++ Redistributable (https://aka.ms/vs/17/release/vc_redist.x64.exe), then Retry install.');
       return { code: 1 };
     }
     emit('Done. Starting the study engine ...');
